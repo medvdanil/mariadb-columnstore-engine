@@ -2955,6 +2955,17 @@ int main(int argc, char *argv[])
 				password = "'" + password + "'";
 			}
 
+			//start password in a tmp file
+			string fileName = "tmp/.mcspw"
+			unlink (fileName.c_str());
+			ofstream newFile (fileName.c_str());
+
+			string cmd = "echo " + password + " > " + fileName;
+			system(cmd.c_str());
+
+			newFile.close();
+			password = "******";
+
 			checkSystemMySQLPort(mysqlPort, sysConfig, USER, password, childmodulelist, IserverTypeInstall, pmwithum);
 
 			if ( ( IserverTypeInstall == oam::INSTALL_COMBINE_DM_UM_PM ) ||

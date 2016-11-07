@@ -43,6 +43,19 @@ set BASH "/bin/bash "
 
 set HOME "$env(HOME)"
 
+#clear password if its is 'ssh', meaning using ssh-keys
+if { $PASSWORD == "SSH" } {
+	set PASSWORD " "
+} 
+
+#get password if '******', meaning it was stored in a temp file
+if { $PASSWORD == "*******" } {
+
+	set PASSWORD cat tmp/.mcspw 
+} 
+
+
+
 log_user $DEBUG
 spawn -noecho /bin/bash
 #
