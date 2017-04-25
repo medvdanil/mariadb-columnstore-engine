@@ -180,6 +180,7 @@ bool mysqlRep = false;
 string MySQLRep = "y";
 string PMwithUM = "n";
 bool amazonInstall = false;
+bool nonDistribute = false;
 
 string DataFileEnvFile;
 
@@ -281,7 +282,7 @@ int main(int argc, char *argv[])
 			cout << "	Enter one of the options within [], if available, or" << endl;
 			cout << "	Enter a new value" << endl << endl;
 			cout << endl;
-   			cout << "Usage: postConfigure [-h][-c][-u][-p][-s][-port][-i]" << endl;
+   			cout << "Usage: postConfigure [-h][-c][-u][-p][-s][-port][-i][-n]" << endl;
 			cout << "   -h  Help" << endl;
 			cout << "   -c  Config File to use to extract configuration data, default is Columnstore.xml.rpmsave" << endl;
 			cout << "   -u  Upgrade, Install using the Config File from -c, default to Columnstore.xml.rpmsave" << endl;
@@ -289,7 +290,8 @@ int main(int argc, char *argv[])
 			cout << "   -p  Unix Password, used with no-prompting option" << endl;
 			cout << "   -s  Single Threaded Remote Install" << endl;
 			cout << "   -port MariaDB ColumnStore Port Address" << endl;
-            cout << "   -i Non-root Install directory, Only use for non-root installs" << endl;
+			cout << "   -i Non-root Install directory, Only use for non-root installs" << endl;
+			cout << "   -n Non-distributed install, meaning it will not install the remote nodes" << endl;
 			exit (0);
 		}
       		else if( string("-s") == argv[i] )
@@ -326,7 +328,7 @@ int main(int argc, char *argv[])
 			noPrompting = true;
 		// for backward compatibility
 		else if( string("-n") == argv[i] )
-			noPrompting = true;
+			nonDistribute = true;
 		else if( string("-port") == argv[i] ) {
 			i++;
 			if (i >= argc ) {
@@ -2754,39 +2756,43 @@ int main(int argc, char *argv[])
 
 			cout << endl;
 
-			if ( EEPackageType == "rpm" )
-			{
-				cout << "Performing an MariaDB ColumnStore System install using RPM packages" << endl; 
-				cout << "located in the " + HOME + " directory." << endl << endl;
-			}
-			else
-			{
-				if ( EEPackageType == "binary" )
-				{
-					cout << "Performing an MariaDB ColumnStore System install using a Binary package" << endl; 
-					cout << "located in the " + HOME + " directory." << endl << endl;
-				}
-				else
-				{
-					cout << "Performing an MariaDB ColumnStore System install using using DEB packages" << endl;
-					cout << "located in the " + HOME + " directory." << endl;
-				}
-			}
-	
-			//check if pkgs are located in $HOME directory
 			string version = systemsoftware.Version + "-" + systemsoftware.Release;
-			if ( EEPackageType == "rpm")
-                    		columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.rpm.tar.gz";
-			else
-	            		if ( EEPackageType == "deb") 
-					columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.deb.tar.gz";
-				else
-                    			columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.bin.tar.gz";
+
+			if ( !nonDistribute )
+			{
+			    if ( EEPackageType == "rpm" )
+			    {
+				    cout << "Performing an MariaDB ColumnStore System install using RPM packages" << endl; 
+				    cout << "located in the " + HOME + " directory." << endl << endl;
+			    }
+			    else
+			    {
+				    if ( EEPackageType == "binary" )
+				    {
+					    cout << "Performing an MariaDB ColumnStore System install using a Binary package" << endl; 
+					    cout << "located in the " + HOME + " directory." << endl << endl;
+				    }
+				    else
+				    {
+					    cout << "Performing an MariaDB ColumnStore System install using using DEB packages" << endl;
+					    cout << "located in the " + HOME + " directory." << endl;
+				    }
+			    }
+			
+			    //check if pkgs are located in $HOME directory
+			    if ( EEPackageType == "rpm")
+				    columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.rpm.tar.gz";
+			    else
+				    if ( EEPackageType == "deb") 
+					    columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.deb.tar.gz";
+				    else
+					    columnstorePackage = HOME + "/" + "mariadb-columnstore-" + version + "*.bin.tar.gz";
 
 
-  	       		if( !pkgCheck(columnstorePackage) )
-            		exit(1);
- 
+			    if( !pkgCheck(columnstorePackage) )
+			    exit(1);
+			}
+			
 			if ( password.empty() )
 			{
 				cout << endl;
@@ -2874,6 +2880,23 @@ int main(int argc, char *argv[])
 					(remoteModuleType == "pm" && IserverTypeInstall == oam::INSTALL_COMBINE_DM_UM_PM) ||
 					(remoteModuleType == "pm" && pmwithum) )
 				{
+				    if ( nonDistribute )
+				    {
+					cout << endl << "----- Performing Install Check on '" + remoteModuleName + " / " + remoteHostName + "' -----" << endl << endl;
+
+				      	//check of releasenum file exist, which shows package is installed
+					string cmd = installDir + "/bin/remote_command.sh " + remoteModuleIP + " " + password + " 'ls" + installDir + "/releasenum' < /tmp/releasenum_check.log";
+					int rtnCode = system(cmd.c_str());
+					if (WEXITSTATUS(rtnCode) != 0) {
+						cout << endl << "Error MariaDB-ColumnStore packages not installed on " + remoteModuleName + " / " + remoteHostName << endl;
+						cout << "Install and re-run postConfigure. Exiting..." << endl << endl; 
+						exit(1);
+					}
+					else
+						cout << endl << "MariaDB-ColumnStore packages installed" << endl;
+				    }
+				    else
+				    {
 					cout << endl << "----- Performing Install on '" + remoteModuleName + " / " + remoteHostName + "' -----" << endl << endl;
 
 					if ( remote_installer_debug == "1" )
@@ -3022,12 +3045,30 @@ int main(int argc, char *argv[])
 							}
 						}
 					}
+				    }
 				}
 				else
 				{
 					if ( (remoteModuleType == "pm" && IserverTypeInstall != oam::INSTALL_COMBINE_DM_UM_PM) ||
 						(remoteModuleType == "pm" && !pmwithum ) )
 					{
+					    if ( nonDistribute )
+					    {
+						cout << endl << "----- Performing Install Check on '" + remoteModuleName + " / " + remoteHostName + "' -----" << endl << endl;
+
+						//check of releasenum file exist, which shows package is installed
+						string cmd = installDir + "/bin/remote_command.sh " + remoteModuleIP + " " + password + " 'ls" + installDir + "/releasenum' < /tmp/releasenum_check.log";
+						int rtnCode = system(cmd.c_str());
+						if (WEXITSTATUS(rtnCode) != 0) {
+							cout << endl << "Error MariaDB-ColumnStore packages not installed on " + remoteModuleName + " / " + remoteHostName << endl;
+							cout << "Install and re-run postConfigure. Exiting..." << endl << endl; 
+							exit(1);
+						}
+						else
+							cout << endl << "MariaDB-ColumnStore packages installed" << endl;
+					    }
+					    else
+					    {
 						cout << endl << "----- Performing Install on '" + remoteModuleName + " / " + remoteHostName + "' -----" << endl << endl;
 
 						if ( remote_installer_debug == "1" )
@@ -3092,11 +3133,12 @@ int main(int argc, char *argv[])
 								}
 							}
 						}
+					    }
 					}
 				}
 			}
 
-			if ( thread_remote_installer ) {
+			if ( thread_remote_installer &&  !nonDistribute ) {
 		
 				//wait until remove install Thread Count is at zero or hit timeout
 				cout << endl << "MariaDB ColumnStore Package being installed, please wait ...";
