@@ -105,6 +105,9 @@ enum RowAggFunctionType
 	// Constant
 	ROWAGG_CONSTANT,
 
+	// User Defined Aggregate Function
+	ROWAGG_UDAF,
+
 	// internal function type to avoid duplicate the work
 	// handling ROWAGG_COUNT_NO_OP, ROWAGG_DUP_FUNCT and ROWAGG_DUP_AVG is a little different
 	// ROWAGG_COUNT_NO_OP  :  count done by AVG, no need to copy

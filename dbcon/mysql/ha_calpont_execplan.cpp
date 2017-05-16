@@ -447,6 +447,9 @@ void debug_walk(const Item *item, void *arg)
 		case Item_sum::MAX_FUNC:
 			cout << "MAX_FUNC: " << item_name << endl;
 			break;
+		case Item_sum::UDF_SUM_FUNC:
+			cout << "UDAF_FUNC: " << item_name << endl;
+			break;
 		default:
 			cout << "SUM_FUNC_ITEM type=" << isp->sum_func() << endl;
 			break;
@@ -2135,6 +2138,9 @@ uint32_t setAggOp(AggregateColumn* ac, Item_sum* isp)
 				return ER_CHECK_NOT_IMPLEMENTED;
 			return rc;
 		}
+		case Item_sum::UDF_SUM_FUNC:
+			ac->aggOp(AggregateColumn::UDAF);
+			return rc;
 		default:
 			return ER_CHECK_NOT_IMPLEMENTED;
 	}
@@ -3527,6 +3533,7 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 		gwi.aggOnSelect = true;
 
 	// N.B. argument_count() is the # of formal parms to the agg fcn. InifniDB only supports 1 argument
+	// TODO: Support more than one parm
 	if (isp->argument_count() != 1 && isp->sum_func() != Item_sum::GROUP_CONCAT_FUNC)
 	{
 		gwi.fatalParseError = true;
