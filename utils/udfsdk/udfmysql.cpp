@@ -175,6 +175,83 @@ long long idb_isnull(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *erro
 	return 0;
 }
 
+
+/**
+ * ALLNULL connector stub
+ */
+struct allnull_data
+{
+  ulonglong	totalQuantity;
+  bool 	    bAllNull;
+};
+ 
+#ifdef _MSC_VER
+__declspec(dllexport)
+#endif
+my_bool allnull_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
+{
+	struct allnull_data* data;
+	if (args->arg_count != 1)
+	{
+		strcpy(message,"allnull() requires one argument");
+		return 1;
+	}
+
+	if (!(data = (struct allnull_data*) malloc(sizeof(struct allnull_data))))
+	{
+		strmov(message,"Couldn't allocate memory");
+		return 1;
+	}
+	data->totalQuantity	= 0;
+	data->bAllNull	= true;
+
+	initid->ptr = (char*)data;
+
+	return 0;
+}
+
+#ifdef _MSC_VER
+__declspec(dllexport)
+#endif
+void allnull_deinit(UDF_INIT* initid)
+{
+	free(initid->ptr);
+}	
+
+#ifdef _MSC_VER
+__declspec(dllexport)
+#endif
+long long allnull(UDF_INIT* initid, UDF_ARGS* args __attribute__((unused)),
+				  char* is_null, char* error __attribute__((unused)))
+{
+	struct allnull_data* data = (struct allnull_data*)initid->ptr;
+	return data->bAllNull;
+}
+
+void
+allnull_clear(UDF_INIT* initid, char* is_null __attribute__((unused)),
+              char* message __attribute__((unused)))
+{
+	struct allnull_data* data = (struct allnull_data*)initid->ptr;
+	data->totalQuantity = 0;
+	data->bAllNull      = false;
+}
+
+void
+allnull_add(UDF_INIT* initid, UDF_ARGS* args,
+            char* is_null,
+            char* message __attribute__((unused)))
+{
+	struct allnull_data* data = (struct allnull_data*)initid->ptr;
+	const char *word=args->args[0];
+	data->totalQuantity++;
+	if (!word)
+	{
+		data->bAllNull = true;
+	}
+}
+
+
 }
 // vim:ts=4 sw=4:
 
