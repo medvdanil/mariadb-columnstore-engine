@@ -58,6 +58,7 @@ using namespace boost;
 #include "simplecolumn.h"
 #include "rowcolumn.h"
 #include "treenodeimpl.h"
+#include "udafcolumn.h"
 using namespace execplan;
 
 #include "configcpp.h"
@@ -697,6 +698,21 @@ void updateAggregateColType(AggregateColumn* ac, const SRCP& srcp, int op, JobIn
 		ct.scale = 0;
 		ct.precision = 0;
 	}
+	else if (op == AggregateColumn::UDAF)
+	{
+		UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(ac);
+		if (udafc)
+		{
+			mcsv1Context& udafContext = udafc->getContext();
+			ct.colDataType = udafContext.getResultType();
+			ct.colWidth = udafContext.getColWidth();
+			udafContext.getResultDecimalCharacteristics(ct.scale, ct.precision);
+		}
+		else
+		{
+			ct = ac->resultType();
+		}
+	}
 	else
 	{
 		ct = ac->resultType();
@@ -830,9 +846,9 @@ const JobStepVector doAggProject(const CalpontSelectExecutionPlan* csep, JobInfo
 		}
 
 		srcp = retCols[i];
-		const AggregateColumn* ag = dynamic_cast<const AggregateColumn*>(retCols[i].get());
-		if (ag != NULL)
-			srcp = ag->functionParms();
+//		const AggregateColumn* ag = dynamic_cast<const AggregateColumn*>(retCols[i].get());
+//		if (ag != NULL)
+//			srcp = ag->functionParms();
 
 		const ArithmeticColumn* ac = dynamic_cast<const ArithmeticColumn*>(srcp.get());
 		const FunctionColumn* fc = dynamic_cast<const FunctionColumn*>(srcp.get());
@@ -878,6 +894,16 @@ const JobStepVector doAggProject(const CalpontSelectExecutionPlan* csep, JobInfo
 			AggregateColumn* ac = dynamic_cast<AggregateColumn*>(retCols[i].get());
 			if (ac != NULL)
 			{
+				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(ac);
+				if (udafc)
+				{
+					UDAF_MAP::iterator funcIter = UDAFMap::getMap().find(udafc->getContext().getName());
+					if (funcIter == UDAFMap::getMap().end())
+					{
+						throw runtime_error ("Columnstore UDAF not found.");
+					}
+					udafc->setFunction(funcIter->second);
+				}
 				srcp = ac->functionParms();
 				sc = dynamic_cast<const SimpleColumn*>(srcp.get());
 				if (ac->constCol().get() != NULL)

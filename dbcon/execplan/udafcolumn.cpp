@@ -43,27 +43,27 @@ namespace execplan {
  * Constructors/Destructors
  */
 UDAFColumn::UDAFColumn():
-		AggregateColumn(), udafFunction(NULL)
+		AggregateColumn(), pUDAFfunction(NULL)
 {
 }
 
 UDAFColumn::UDAFColumn(const uint32_t sessionID):
-		AggregateColumn(sessionID), udafFunction(NULL)
+		AggregateColumn(sessionID), pUDAFfunction(NULL)
 {
 }
 
 UDAFColumn::UDAFColumn(const UDAFColumn& rhs, const uint32_t sessionID):
-		AggregateColumn(dynamic_cast<const AggregateColumn&>(rhs)), udafFunction(rhs.udafFunction)
+		AggregateColumn(dynamic_cast<const AggregateColumn&>(rhs)), pUDAFfunction(rhs.pUDAFfunction)
 {
 }
 
 UDAFColumn::UDAFColumn(const std::string& functionName, ReturnedColumn* parm, const uint32_t sessionID):
-		AggregateColumn(sessionID), udafFunction(NULL)
+		AggregateColumn(sessionID), pUDAFfunction(NULL)
 {
 	UDAF_MAP::iterator funcIter = UDAFMap::getMap().find(functionName);
 	if (funcIter != UDAFMap::getMap().end())
 	{
-		udafFunction = funcIter->second;
+		pUDAFfunction = funcIter->second;
 	}
 }
 

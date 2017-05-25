@@ -80,6 +80,7 @@ using namespace cal_impl_if;
 #include "groupconcatcolumn.h"
 #include "outerjoinonfilter.h"
 #include "intervalcolumn.h"
+#include "udafcolumn.h"
 using namespace execplan;
 
 #include "funcexp.h"
@@ -3534,7 +3535,8 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 
 	// N.B. argument_count() is the # of formal parms to the agg fcn. InifniDB only supports 1 argument
 	// TODO: Support more than one parm
-	if (isp->argument_count() != 1 && isp->sum_func() != Item_sum::GROUP_CONCAT_FUNC)
+	if (isp->argument_count() != 1 && isp->sum_func() != Item_sum::GROUP_CONCAT_FUNC
+		&& isp->sum_func() != Item_sum::UDF_SUM_FUNC)
 	{
 		gwi.fatalParseError = true;
 		gwi.parseErrorText = IDBErrorInfo::instance()->errorMsg(ERR_MUL_ARG_AGG);
@@ -3543,9 +3545,18 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 
 	AggregateColumn* ac = NULL;
 	if (isp->sum_func() == Item_sum::GROUP_CONCAT_FUNC)
+	{
 		ac = new GroupConcatColumn(gwi.sessionid);
+	}
 	else
+	if (isp->sum_func() == Item_sum::UDF_SUM_FUNC)
+	{
+		ac = new UDAFColumn(gwi.sessionid);
+	}
+	else
+	{
 		ac = new AggregateColumn(gwi.sessionid);
+	}
 
 	if (isp->name)
 		ac->alias(isp->name);
@@ -3900,6 +3911,45 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 	else if (ac->constCol())
 	{
 		gwi.count_asterisk_list.push_back(ac);
+	}
+
+	// For UDAF, populate the context and call the UDAF init() function.
+	if (isp->sum_func() == Item_sum::UDF_SUM_FUNC)
+	{
+		UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(ac);
+		if (udafc)
+		{
+			mcsv1Context& context = udafc->getContext();
+			context.setName(isp->func_name());
+			UDAF_MAP::iterator funcIter = UDAFMap::getMap().find(isp->func_name());
+			if (funcIter == UDAFMap::getMap().end())
+			{
+				gwi.fatalParseError = true;
+				gwi.parseErrorText = isp->func_name();
+				gwi.parseErrorText += ": No Columnstore UDAF found with that name";
+				return NULL;
+			}
+			udafc->setFunction(funcIter->second);
+			context.setResultType(udafc->resultType().colDataType);
+			context.setColWidth(udafc->resultType().colWidth);
+			context.setResultDecimalCharacteristics(udafc->resultType().scale, 
+													udafc->resultType().precision);
+
+			COL_TYPES colTypes;
+			execplan::CalpontSelectExecutionPlan::ColumnMap::iterator cmIter;
+
+			for (cmIter = gwi.columnMap.begin(); cmIter != gwi.columnMap.end(); ++cmIter)
+			{
+				colTypes.insert(make_pair(cmIter->first, cmIter->second->resultType().colDataType));
+			}
+
+			if (udafc->getFunction()->init(&context, colTypes) == mcsv1_UDAF::ERROR)
+			{
+				gwi.fatalParseError = true;
+				gwi.parseErrorText = udafc->getContext().getErrorMessage();
+				return NULL;
+			}
+		}
 	}
 	return ac;
 }

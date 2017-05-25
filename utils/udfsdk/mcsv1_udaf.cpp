@@ -31,7 +31,7 @@ using namespace mcsv1sdk;
  * task complete 
  */
 UDAF_MAP UDAFMap::fm;
-
+#include "allnull.h"
 UDAF_MAP& UDAFMap::getMap()
 {
 	if (fm.size() > 0)
@@ -43,10 +43,75 @@ UDAF_MAP& UDAFMap::getMap()
 	// please use lower case for the function name. Because the names might be 
 	// case-insensitive in MySQL depending on the setting. In such case, 
 	// the function names passed to the interface is always in lower case.
-//	fm["idb_add"] = new IDB_add();
+	fm["allnull"] = new allnull();
 //	fm["idb_isnull"] = new IDB_isnull();
 	
 	return fm;
+}
+
+mcsv1Context& mcsv1Context::copy(mcsv1Context& rhs)
+{
+	fRunFlags        = rhs.getRunFlags();
+	fContextFlags    = rhs.getContextFlags();
+	allocUserData(rhs.getUserDataSize());
+	fResultType      = rhs.getResultType();
+	fColWidth        = rhs.getColWidth();
+	rhs.getResultDecimalCharacteristics(fResultDecimals, fResultPrecision);
+	fRowsInPartition = rhs.getRowsInPartition();
+	rhs.getStartFrame(fStartFrame, fStartConstant);
+	rhs.getEndFrame(fEndFrame, fEndConstant);
+	createUserData();
+	if (rhs.getUserData())
+	{
+		memcpy(fUserData, rhs.getUserData(), fUserDataSize);
+	}
+	functionName = rhs.getName();
+	return *this;
+}
+
+int32_t mcsv1Context::getColWidth()
+{
+	if (fColWidth > 0)
+	{
+		return fColWidth;
+	}
+	// JIT initialization for types that have a defined size.
+	switch (fResultType)
+	{
+	case CalpontSystemCatalog::BIT:
+	case CalpontSystemCatalog::TINYINT:
+	case CalpontSystemCatalog::UTINYINT:
+	case CalpontSystemCatalog::CHAR:
+		fColWidth = 1;
+		break;
+	case CalpontSystemCatalog::SMALLINT:
+	case CalpontSystemCatalog::USMALLINT:
+		fColWidth = 2;
+		break;
+	case CalpontSystemCatalog::MEDINT:
+	case CalpontSystemCatalog::INT:
+	case CalpontSystemCatalog::UMEDINT:
+	case CalpontSystemCatalog::UINT:
+	case CalpontSystemCatalog::FLOAT:
+	case CalpontSystemCatalog::UFLOAT:
+	case CalpontSystemCatalog::DATE:
+		fColWidth = 4;
+		break;
+	case CalpontSystemCatalog::BIGINT:
+	case CalpontSystemCatalog::UBIGINT:
+	case CalpontSystemCatalog::DOUBLE:
+	case CalpontSystemCatalog::UDOUBLE:
+	case CalpontSystemCatalog::DATETIME:
+	case CalpontSystemCatalog::STRINT:
+		fColWidth = 8;
+		break;
+	case CalpontSystemCatalog::LONGDOUBLE:
+		fColWidth = sizeof(long double);
+		break;
+	default:
+		break;
+	}
+	return fColWidth;
 }
 
 bool mcsv1Context::operator==(const mcsv1Context& c) const
@@ -54,8 +119,8 @@ bool mcsv1Context::operator==(const mcsv1Context& c) const
 	// We don't test the per row data fields. They don't determine
 	// if it's the same Context.
 	if (getName()        != c.getName()
-	 ||	bRunFlags        != c.bRunFlags
-	 || bContextFlags    != c.bContextFlags
+	 ||	fRunFlags        != c.fRunFlags
+	 || fContextFlags    != c.fContextFlags
 	 || fUserDataSize    != c.fUserDataSize
 	 || fUserData        != c.fUserData
 	 || fResultType      != c.fResultType
@@ -79,7 +144,7 @@ const std::string mcsv1Context::toString() const
 {
 	std::ostringstream output;
 	output << "mcsv1Context: " << getName() << std::endl;
-	output << "  RunFlags=" << bRunFlags << " ContextFlags=" << bContextFlags << std::endl;
+	output << "  RunFlags=" << fRunFlags << " ContextFlags=" << fContextFlags << std::endl;
 	output << "  UserDataSize=" << fUserDataSize << " ResultType=" << colDataTypeToString(fResultType) << std::endl;
 	output << "  ResultDecimals=" << fResultDecimals << " ResultPrecision=" << fResultPrecision << std::endl;
 	output << "  ErrorMsg=" << errorMsg << std::endl;
@@ -92,19 +157,24 @@ const std::string mcsv1Context::toString() const
 void mcsv1Context::serialize(messageqcpp::ByteStream& b) const
 {
 	b.needAtLeast(sizeof(mcsv1Context) + fUserDataSize);
-	b << functionName;
 	b << (ObjectReader::id_t) ObjectReader::MCSV1_CONTEXT;
-	b << bRunFlags;
-	b << bContextFlags;
+	b << functionName;
+	b << fRunFlags;
+	b << fContextFlags;
+	b << fUserDataSize;
+#if 0
+	// NOTE: We may choose to not stream user data. It may not be conducive
+	// to distributed processing.
 	if (fUserData && fUserDataSize > 0)
 	{
-		b << fUserDataSize;
+		b << (int8_t)1;
 		b.append(fUserData, fUserDataSize);
 	}
 	else
 	{
-		b << (uint32_t)0;
+		b << (int8_t)0;
 	}
+#endif
 	b << (uint32_t)fResultType;
 	b << fResultDecimals;
 	b << fResultPrecision;
@@ -126,28 +196,36 @@ void mcsv1Context::unserialize(messageqcpp::ByteStream& b)
 {
 	ObjectReader::checkType(b, ObjectReader::MCSV1_CONTEXT);
 	b >> functionName;
-	b >> bRunFlags;
-	b >> bContextFlags;
+	b >> fRunFlags;
+	b >> fContextFlags;
 	b >> fUserDataSize;
+	createUserData();
+#if 0
+	int8_t hasUserData;
+	b >> hasUserData;
 	if (fUserDataSize > 0)
 	{
-		createUserData();
-		memcpy(fUserData, b.buf(), fUserDataSize);
-		b.advance(fUserDataSize);
+		if (hasUserData)
+		{
+			createUserData();
+			memcpy(fUserData, b.buf(), fUserDataSize);
+			b.advance(fUserDataSize);
+		}
 	}
 	else
 	{
 		fUserData = NULL;
 	}
+#endif
 	uint32_t iResultType;
 	b >> iResultType;
 	fResultType = (CalpontSystemCatalog::ColDataType)iResultType;
 	b >> fResultDecimals;
 	b >> fResultPrecision;
 	b >> errorMsg;
-	int dataFlagsSize;
+	size_t dataFlagsSize;
 	b >> dataFlagsSize;
-	for (int i = 0; i < dataFlagsSize; ++i)
+	for (size_t i = 0; i < dataFlagsSize; ++i)
 	{
 		b >> dataFlags[i];
 	}
