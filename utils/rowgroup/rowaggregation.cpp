@@ -459,7 +459,6 @@ inline void RowAggregation::updateFloatSum(float val1, float val2, int64_t col)
 		fRow.setFloatField(val1 + val2, col);
 }
 
-
 //------------------------------------------------------------------------------
 // Verify if the column value is NULL
 // row(in) - Row to be included in aggregation.
@@ -780,7 +779,7 @@ void RowAggregation::initialize()
 //------------------------------------------------------------------------------
 // Reset the working data to aggregate next logical block
 //------------------------------------------------------------------------------
-void RowAggregation::reset()
+void RowAggregation::aggReset()
 {
 	fTotalRowCount = 0;
 	fMaxTotalRowCount = AGG_ROWGROUP_SIZE;
@@ -801,12 +800,30 @@ void RowAggregation::reset()
 
 	fResultDataVec.clear();
 	fResultDataVec.push_back(fRowGroupOut->getRGData());
+
+	// Call the reset for any UDAF in the query
+	for (size_t i = 0; i < fFunctionCols.size(); ++i)
+	{
+		RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+		if (rowUDAF)
+		{
+			mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+			if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+			{
+				std::ostringstream errmsg;
+				errmsg << "RowAggregation (1) A UDAF function, " << rowUDAF->fUDAFContext.getName() << 
+					", is called but there's no entry in UDAF_MAP";
+				throw logic_error(errmsg.str());
+			}
+			funcIter->second->reset(&rowUDAF->fUDAFContext);
+		}
+	}
 }
 
 
-void RowAggregationUM::reset()
+void RowAggregationUM::aggReset()
 {
-	RowAggregation::reset();
+	RowAggregation::aggReset();
 
 	if (fKeyOnHeap)
 	{
@@ -816,6 +833,21 @@ void RowAggregationUM::reset()
 		fExtHash.reset(new ExternalKeyHasher(fKeyRG, fKeyStore.get(), fKeyRG.getColumnCount(), &tmpRow));
 		fExtKeyMapAlloc.reset(new utils::STLPoolAllocator<pair<RowPosition, RowPosition> >());
 		fExtKeyMap.reset(new ExtKeyMap_t(10, *fExtHash, *fExtEq, *fExtKeyMapAlloc));
+	}
+
+	// Call the reset for any UDAF in the query
+	for (size_t i = 0; i < fFunctionCols.size(); ++i)
+	{
+		RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+		if (rowUDAF)
+		{
+			mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+			if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+			{
+				throw logic_error("(2)A UDAF function is called but there's no entry in UDAF_MAP");
+			}
+			funcIter->second->reset(&rowUDAF->fUDAFContext);
+		}
 	}
 }
 
@@ -1386,7 +1418,7 @@ void RowAggregation::serialize(messageqcpp::ByteStream& bs) const
 	bs << functionCount;
 
 	for (uint64_t i = 0; i < functionCount; i++)
-		bs << *(fFunctionCols[i].get());
+		fFunctionCols[i]->serialize(bs);
 }
 
 
@@ -1415,9 +1447,18 @@ void RowAggregation::deserialize(messageqcpp::ByteStream& bs)
 
 	for (uint64_t i = 0; i < functionCount; i++)
 	{
-		SP_ROWAGG_FUNC_t funct(
-			new RowAggFunctionCol(ROWAGG_FUNCT_UNDEFINE, ROWAGG_FUNCT_UNDEFINE, 0, 0));
-		bs >> *(funct.get());
+		uint8_t funcType;
+		bs.peek(funcType);
+		SP_ROWAGG_FUNC_t funct;
+		if (funcType == ROWAGG_UDAF)
+		{
+			funct.reset(new RowUDAFFunctionCol(0, 0));
+		}
+		else
+		{
+			funct.reset(new RowAggFunctionCol(ROWAGG_FUNCT_UNDEFINE, ROWAGG_FUNCT_UNDEFINE, 0, 0));
+		}
+		funct->deserialize(bs);
 		fFunctionCols.push_back(funct);
 	}
 }
@@ -1476,6 +1517,20 @@ void RowAggregation::updateEntry(const Row& rowIn)
 			case ROWAGG_CONSTANT:
 			case ROWAGG_GROUP_CONCAT:
 				break;
+
+			case ROWAGG_UDAF:
+			{
+				RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+				if (rowUDAF)
+				{
+					doUDAF(rowIn, colIn, colOut, colOut + 1, rowUDAF);
+				}
+				else
+				{
+					throw logic_error("(3)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				break;
+			}
 
 			default:
 			{
@@ -1729,6 +1784,104 @@ void RowAggregation::doStatistics(const Row& rowIn, int64_t colIn, int64_t colOu
 	fRow.setLongDoubleField(fRow.getLongDoubleField(colAux+1) + valIn*valIn, colAux+1);
 }
 
+void RowAggregation::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int64_t colAux, 
+							RowUDAFFunctionCol* rowUDAF)
+{
+	std::vector<mcsv1sdk::ColumnDatum> valsIn;
+	execplan::CalpontSystemCatalog::ColDataType colDataType = fRowGroupIn.getColTypes()[colIn];
+	std::vector<uint32_t> dataFlags;
+
+	if (isNull(&fRowGroupIn, rowIn, colIn) == true)
+		rowUDAF->fUDAFContext.getDataFlags()[0] &= mcsv1sdk::PARAM_IS_NULL;
+
+	mcsv1sdk::ColumnDatum datum;
+
+	switch (colDataType)
+	{
+		case execplan::CalpontSystemCatalog::TINYINT:
+		case execplan::CalpontSystemCatalog::SMALLINT:
+		case execplan::CalpontSystemCatalog::MEDINT:
+		case execplan::CalpontSystemCatalog::INT:
+		case execplan::CalpontSystemCatalog::BIGINT:
+		case execplan::CalpontSystemCatalog::DECIMAL:
+		case execplan::CalpontSystemCatalog::UDECIMAL:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::BIGINT;
+			datum.columnData = rowIn.getIntField(colIn);
+			datum.decimals = fRowGroupIn.getPrecision()[colIn];
+			break;
+		}
+		case execplan::CalpontSystemCatalog::UTINYINT:
+		case execplan::CalpontSystemCatalog::USMALLINT:
+		case execplan::CalpontSystemCatalog::UMEDINT:
+		case execplan::CalpontSystemCatalog::UINT:
+		case execplan::CalpontSystemCatalog::UBIGINT:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
+			datum.columnData = rowIn.getUintField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::DOUBLE:
+		case execplan::CalpontSystemCatalog::UDOUBLE:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::DOUBLE;
+			datum.columnData = rowIn.getDoubleField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::FLOAT:
+		case execplan::CalpontSystemCatalog::UFLOAT:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::FLOAT;
+			datum.columnData = rowIn.getFloatField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::DATE:
+		case execplan::CalpontSystemCatalog::DATETIME:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
+			datum.columnData = rowIn.getUintField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::CHAR:
+		case execplan::CalpontSystemCatalog::VARCHAR:
+		case execplan::CalpontSystemCatalog::TEXT:
+		case execplan::CalpontSystemCatalog::VARBINARY:
+		case execplan::CalpontSystemCatalog::CLOB:
+		case execplan::CalpontSystemCatalog::BLOB:
+		{
+			datum.dataType = colDataType;
+			datum.columnData = rowIn.getStringField(colIn);
+			break;
+		}
+		default:
+		{
+			std::ostringstream errmsg;
+			errmsg << "RowAggregation " << rowUDAF->fUDAFContext.getName() << 
+				": No logic for data type: " << colDataType;
+			throw logging::QueryDataExcept(errmsg.str(), logging::aggregateFuncErr);
+			break;
+		}
+	}
+	valsIn.push_back(datum);
+
+	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+	{
+		throw logic_error("(4)A UDAF function is called but there's no entry in UDAF_MAP");
+	}
+	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+	rc = funcIter->second->nextValue(&rowUDAF->fUDAFContext, valsIn);
+	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+	{
+		throw logging::QueryDataExcept(rowUDAF->fUDAFContext.getErrorMessage(), logging::aggregateFuncErr);
+		rowUDAF->bInterrupted = true;
+	}
+	// We store a copy of the user data in the aux field to be fully aggregated later.
+	// It would be nice to store a pointer instead, to save on the copy if we can figure out how.
+	fRow.setVarBinaryField(rowUDAF->fUDAFContext.getUserData(), 
+						   rowUDAF->fUDAFContext.getUserDataSize(), 
+						   colAux);
+}
 
 //------------------------------------------------------------------------------
 // Allocate a new data array for the output RowGroup
@@ -1790,10 +1943,11 @@ RowAggregationUM::RowAggregationUM(const vector<SP_ROWAGG_GRPBY_t>& rowAggGroupB
                                    const vector<SP_ROWAGG_FUNC_t>&  rowAggFunctionCols,
                                    joblist::ResourceManager *r, boost::shared_ptr<int64_t> sessionLimit) :
 	RowAggregation(rowAggGroupByCols, rowAggFunctionCols), fHasAvg(false), fKeyOnHeap(false),
-	fHasStatsFunc(false), fTotalMemUsage(0), fRm(r), fSessionMemLimit(sessionLimit),
-	fLastMemUsage(0), fNextRGIndex(0)
+	fHasStatsFunc(false), fHasUDAF(false),fTotalMemUsage(0), fRm(r), 
+	fSessionMemLimit(sessionLimit), fLastMemUsage(0), fNextRGIndex(0)
 {
-	// Check if there are any avg functions.
+	// Check if there are any avg, stats or UDAF functions.
+	// These flags are used in finalize.
 	for (uint64_t i = 0; i < fFunctionCols.size(); i++)
 	{
 		if (fFunctionCols[i]->fAggFunction == ROWAGG_AVG ||
@@ -1801,6 +1955,8 @@ RowAggregationUM::RowAggregationUM(const vector<SP_ROWAGG_GRPBY_t>& rowAggGroupB
 			fHasAvg = true;
 		else if (fFunctionCols[i]->fAggFunction == ROWAGG_STATS)
 			fHasStatsFunc = true;
+		else if (fFunctionCols[i]->fAggFunction == ROWAGG_UDAF)
+			fHasUDAF = true;
 	}
 
 	// Check if all groupby column selected
@@ -1904,6 +2060,11 @@ void RowAggregationUM::finalize()
 		calculateStatisticsFunctions();
 	}
 
+	if (fHasUDAF)
+	{
+		calculateUDAFColumns();
+	}
+
 	if (fGroupConcat.size() > 0)
 		setGroupConcatString();
 
@@ -1950,6 +2111,7 @@ void RowAggregationUM::updateEntry(const Row& rowIn)
 	{
 		int64_t colIn  = fFunctionCols[i]->fInputColumnIndex;
 		int64_t colOut = fFunctionCols[i]->fOutputColumnIndex;
+		int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 
 		switch (fFunctionCols[i]->fAggFunction)
 		{
@@ -1971,14 +2133,12 @@ void RowAggregationUM::updateEntry(const Row& rowIn)
 				// The sum and count on UM may not be put next to each other:
 				//   use colOut to store the sum;
 				//   use colAux to store the count.
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doAvg(rowIn, colIn, colOut, colAux);
 				break;
 			}
 
 			case ROWAGG_STATS:
 			{
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doStatistics(rowIn, colIn, colOut, colAux);
 				break;
 			}
@@ -2003,6 +2163,20 @@ void RowAggregationUM::updateEntry(const Row& rowIn)
 			case ROWAGG_DUP_STATS:
 			case ROWAGG_CONSTANT:
 				break;
+
+			case ROWAGG_UDAF:
+			{
+				RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+				if (rowUDAF)
+				{
+					doUDAF(rowIn, colIn, colOut, colAux, rowUDAF);
+				}
+				else
+				{
+					throw logic_error("(5)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				break;
+			}
 
 			default:
 			{
@@ -2145,6 +2319,113 @@ void RowAggregationUM::calculateAvgColumns()
 
 
 //------------------------------------------------------------------------------
+// After all PM rowgroups received, calculate the final value.
+//------------------------------------------------------------------------------
+void RowAggregationUM::calculateUDAFColumns()
+{
+#if 0
+	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+	{
+		throw logic_error("(9) A UDAF function is called but there's no entry in UDAF_MAP");
+	}
+	boost::any valOut;
+	bool bNull = false;
+	funcIter->second->evaluate(&rowUDAF->fUDAFContext, valOut, bNull);
+
+	// Set the returned value into the output row
+	execplan::CalpontSystemCatalog::ColDataType colDataType = fRowGroupIn.getColTypes()[colIn];
+
+	switch (colDataType)
+	{
+		case execplan::CalpontSystemCatalog::TINYINT:
+		case execplan::CalpontSystemCatalog::SMALLINT:
+		case execplan::CalpontSystemCatalog::MEDINT:
+		case execplan::CalpontSystemCatalog::INT:
+		case execplan::CalpontSystemCatalog::BIGINT:
+		case execplan::CalpontSystemCatalog::DECIMAL:
+		case execplan::CalpontSystemCatalog::UDECIMAL:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::BIGINT;
+			datum.columnData = rowIn.getIntField(colIn);
+			datum.decimals = fRowGroupIn.getPrecision()[colIn];
+			break;
+		}
+		case execplan::CalpontSystemCatalog::UTINYINT:
+		case execplan::CalpontSystemCatalog::USMALLINT:
+		case execplan::CalpontSystemCatalog::UMEDINT:
+		case execplan::CalpontSystemCatalog::UINT:
+		case execplan::CalpontSystemCatalog::UBIGINT:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
+			datum.columnData = rowIn.getUintField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::DOUBLE:
+		case execplan::CalpontSystemCatalog::UDOUBLE:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::DOUBLE;
+			datum.columnData = rowIn.getDoubleField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::FLOAT:
+		case execplan::CalpontSystemCatalog::UFLOAT:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::FLOAT;
+			datum.columnData = rowIn.getFloatField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::DATE:
+		case execplan::CalpontSystemCatalog::DATETIME:
+		{
+			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
+			datum.columnData = rowIn.getUintField(colIn);
+			break;
+		}
+		case execplan::CalpontSystemCatalog::CHAR:
+		case execplan::CalpontSystemCatalog::VARCHAR:
+		case execplan::CalpontSystemCatalog::TEXT:
+		case execplan::CalpontSystemCatalog::VARBINARY:
+		case execplan::CalpontSystemCatalog::CLOB:
+		case execplan::CalpontSystemCatalog::BLOB:
+		{
+			datum.dataType = colDataType;
+			datum.columnData = rowIn.getStringField(colIn);
+			break;
+		}
+		default:
+		{
+			std::ostringstream errmsg;
+			errmsg << "RowAggregation " << rowUDAF->fUDAFContext.getName() << 
+				": No logic for data type: " << colDataType;
+			throw logging::QueryDataExcept(errmsg.str(), logging::aggregateFuncErr);
+			break;
+		}
+	}
+	valsIn.push_back(datum);
+
+	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+	{
+		throw logic_error("(4)A UDAF function is called but there's no entry in UDAF_MAP");
+	}
+	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+	rc = funcIter->second->nextValue(&rowUDAF->fUDAFContext, valsIn);
+	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+	{
+		throw logging::QueryDataExcept(rowUDAF->fUDAFContext.getErrorMessage(), logging::aggregateFuncErr);
+		rowUDAF->bInterrupted = true;
+	}
+#endif
+}
+
+
+
+
+
+
+
+//------------------------------------------------------------------------------
 // After all PM rowgroups received, calculate the statistics.
 //------------------------------------------------------------------------------
 void RowAggregationUM::calculateStatisticsFunctions()
@@ -2222,7 +2503,6 @@ void RowAggregationUM::calculateStatisticsFunctions()
 	}
 }
 
-
 //------------------------------------------------------------------------------
 // Fix the duplicate function columns -- same function same column id repeated
 //------------------------------------------------------------------------------
@@ -2248,7 +2528,6 @@ void RowAggregationUM::fixDuplicates(RowAggFunctionType funct)
 	}
 }
 
-
 //------------------------------------------------------------------------------
 // Evaluate the functions and expressions
 //------------------------------------------------------------------------------
@@ -2261,7 +2540,6 @@ void RowAggregationUM::evaluateExpression()
 		fe->evaluate(fRow, fExpression);
 	}
 }
-
 
 //------------------------------------------------------------------------------
 // Calculate the aggregate(constant) columns
@@ -2674,6 +2952,12 @@ void RowAggregationUM::doNotNullConstantAggregate(const ConstantAggData& aggData
 		}
 		break;
 
+		case ROWAGG_UDAF:
+		{
+			// TODO
+		}
+		break;
+
 		default:
 		{
 			fRow.setStringField(aggData.fConstValue, colOut);
@@ -2823,6 +3107,7 @@ void RowAggregationUMP2::updateEntry(const Row& rowIn)
 	{
 		int64_t colIn  = fFunctionCols[i]->fInputColumnIndex;
 		int64_t colOut = fFunctionCols[i]->fOutputColumnIndex;
+		int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 
 		switch (fFunctionCols[i]->fAggFunction)
 		{
@@ -2845,14 +3130,12 @@ void RowAggregationUMP2::updateEntry(const Row& rowIn)
 				// The sum and count on UM may not be put next to each other:
 				//   use colOut to store the sum;
 				//   use colAux to store the count.
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doAvg(rowIn, colIn, colOut, colAux);
 				break;
 			}
 
 			case ROWAGG_STATS:
 			{
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doStatistics(rowIn, colIn, colOut, colAux);
 				break;
 			}
@@ -2877,6 +3160,20 @@ void RowAggregationUMP2::updateEntry(const Row& rowIn)
 			case ROWAGG_DUP_STATS:
 			case ROWAGG_CONSTANT:
 				break;
+
+			case ROWAGG_UDAF:
+			{
+				RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+				if (rowUDAF)
+				{
+					doUDAF(rowIn, colIn, colOut, colAux, rowUDAF);
+				}
+				else
+				{
+					throw logic_error("(6)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				break;
+			}
 
 			default:
 			{
@@ -3050,6 +3347,23 @@ void RowAggregationUMP2::doBitOp(const Row& rowIn, int64_t colIn, int64_t colOut
 		fRow.setUintField(valIn ^ valOut, colOut);
 }
 
+void RowAggregationUMP2::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int64_t colAux, 
+								RowUDAFFunctionCol* rowUDAF)
+{
+	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+	{
+		throw logic_error("(9) A UDAF function is called but there's no entry in UDAF_MAP");
+	}
+	boost::any valOut;
+	uint32_t userDataSize = rowUDAF->fUDAFContext.getUserDataSize();
+	const uint8_t* userData = fRow.getVarBinaryField(userDataSize, colAux);
+	funcIter->second->subEvaluate(&rowUDAF->fUDAFContext, userData);
+	fRow.setVarBinaryField(rowUDAF->fUDAFContext.getUserData(), 
+						   rowUDAF->fUDAFContext.getUserDataSize(), 
+						   colAux);
+}
+
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -3163,6 +3477,7 @@ void RowAggregationDistinct::updateEntry(const Row& rowIn)
 	{
 		int64_t colIn  = fFunctionCols[i]->fInputColumnIndex;
 		int64_t colOut = fFunctionCols[i]->fOutputColumnIndex;
+		int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 
 		switch (fFunctionCols[i]->fAggFunction)
 		{
@@ -3192,7 +3507,6 @@ void RowAggregationDistinct::updateEntry(const Row& rowIn)
 				// The sum and count on UM may not be put next to each other:
 				//   use colOut to store the sum;
 				//   use colAux to store the count.
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doAvg(rowIn, colIn, colOut, colAux);
 				break;
 			}
@@ -3202,14 +3516,12 @@ void RowAggregationDistinct::updateEntry(const Row& rowIn)
 				// The sum and count on UM may not be put next to each other:
 				//   use colOut to store the sum;
 				//   use colAux to store the count.
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				RowAggregation::doAvg(rowIn, colIn, colOut, colAux);
 				break;
 			}
 
 			case ROWAGG_STATS:
 			{
-				int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 				doStatistics(rowIn, colIn, colOut, colAux);
 				break;
 			}
@@ -3234,6 +3546,20 @@ void RowAggregationDistinct::updateEntry(const Row& rowIn)
 			case ROWAGG_DUP_STATS:
 			case ROWAGG_CONSTANT:
 				break;
+
+			case ROWAGG_UDAF:
+			{
+				RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+				if (rowUDAF)
+				{
+					doUDAF(rowIn, colIn, colOut, colAux, rowUDAF);
+				}
+				else
+				{
+					throw logic_error("(7)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				break;
+			}
 
 			default:
 			{

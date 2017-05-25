@@ -1294,7 +1294,7 @@ void BatchPrimitiveProcessor::execute()
 						}                                                           // @bug4507, 8k
 						else {                                                      // @bug4507, 8k
 							fAggregator->loadResult(*serialized);                   // @bug4507, 8k
-							fAggregator->reset();                                   // @bug4507, 8k
+							fAggregator->aggReset();                                // @bug4507, 8k
 						}                                                           // @bug4507, 8k
 					}
 					else {
@@ -1361,7 +1361,7 @@ void BatchPrimitiveProcessor::execute()
 				}                                                         // @bug4507, 8k
 				else  {                                                   // @bug4507, 8k
 					fAggregator->loadResult(*serialized);                 // @bug4507, 8k
-					fAggregator->reset();                                 // @bug4507, 8k
+					fAggregator->aggReset();                              // @bug4507, 8k
 				}                                                         // @bug4507, 8k
 			}
 
@@ -1706,7 +1706,7 @@ int BatchPrimitiveProcessor::operator()()
 	}
 
 	if (fAggregator && currentBlockOffset == 0)                     // @bug4507, 8k
-		fAggregator->reset();                                       // @bug4507, 8k
+		fAggregator->aggReset();                                    // @bug4507, 8k
 
 	for (; currentBlockOffset < count; currentBlockOffset++) {
 		if (!(sessionID & 0x80000000)) {   // can't do this with syscat queries

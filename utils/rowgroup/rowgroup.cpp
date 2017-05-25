@@ -126,30 +126,25 @@ void StringStore::serialize(ByteStream &bs) const
     }
 }
 
-uint32_t StringStore::deserialize(ByteStream &bs)
+void StringStore::deserialize(ByteStream &bs)
 {
 	uint32_t i;
 	uint32_t count;
-	uint32_t size;
 	std::string buf;
 	uint8_t tmp8;
-	uint32_t ret = 0;
 
 	//mem.clear();
 	bs >> count;
 	mem.reserve(count);
 	bs >> tmp8;
 	empty = (bool) tmp8;
-	ret += 5;
 	for (i = 0; i < count; i++) {
 		//cout << "deserializing " << size << " bytes\n";
         bs >> buf;
         shared_ptr<std::string> newString(new std::string(buf));
 		mem.push_back(newString);
-		//bs.advance(size);
-		ret += (size + 4);
 	}
-	return ret;
+	return;
 }
 
 void StringStore::clear()
@@ -246,27 +241,24 @@ void RGData::serialize(ByteStream &bs, uint32_t amount) const
 		bs << (uint8_t) 0;
 }
 
-uint32_t RGData::deserialize(ByteStream &bs, bool hasLenField)
+void RGData::deserialize(ByteStream &bs, bool hasLenField)
 {
 	uint32_t amount, sig;
 	uint8_t *buf;
 	uint8_t tmp8;
-	uint32_t ret = 0;
 
 	bs.peek(sig);
 	if (sig == RGDATA_SIG) {
 		bs >> sig;
 		bs >> amount;
-		ret += 8;
 		rowData.reset(new uint8_t[amount]);
 		buf = bs.buf();
 		memcpy(rowData.get(), buf, amount);
 		bs.advance(amount);
 		bs >> tmp8;
-		ret += amount + 1;
 		if (tmp8) {
 			strings.reset(new StringStore());
-			ret += strings->deserialize(bs);
+			strings->deserialize(bs);
 		}
 		else
 			strings.reset();
@@ -275,7 +267,6 @@ uint32_t RGData::deserialize(ByteStream &bs, bool hasLenField)
 	else {
 		if (hasLenField) {
 			bs >> amount;
-			ret += 4;
 		}
 		else
 			amount = bs.length();
@@ -284,9 +275,8 @@ uint32_t RGData::deserialize(ByteStream &bs, bool hasLenField)
 		buf = bs.buf();
 		memcpy(rowData.get(), buf, amount);
 		bs.advance(amount);
-		ret += amount;
 	}
-	return ret;
+	return;
 }
 
 void RGData::clear()

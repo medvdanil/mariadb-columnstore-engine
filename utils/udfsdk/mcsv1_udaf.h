@@ -61,6 +61,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <map>
 #include <boost/any.hpp>
 #ifdef _MSC_VER
 #include <unordered_map>
@@ -105,7 +106,7 @@ private:
 
 
 // Flags to define the type and limitations of a UDA(n)F
-// Used in context->bRunFlags
+// Used in context->fRunFlags
 static uint64_t	UDAF_OVER_REQUIRED __attribute__ ((unused))        = 1;      // May only be used as UDAnF
 static uint64_t	UDAF_OVER_ALLOWED  __attribute__ ((unused))        = 1 << 1; // May be used as UDAF or UDAnF
 static uint64_t	UDAF_ORDER_REQUIRED __attribute__ ((unused))       = 1 << 2; // If used as UDAnF, ORDER BY is required
@@ -116,7 +117,7 @@ static uint64_t	UDAF_MAYBE_NULL     __attribute__ ((unused))       = 1 << 6; // 
 static uint64_t	UDAF_MAYBE_DISTRIBUTED __attribute__ ((unused))    = 1 << 7; // If UDAF is designed to be distributed.
 
 // Flags set by the framework to define the context of the call
-// used in context->bContextFlags
+// used in context->fContextFlags
 static uint64_t	CONTEXT_IS_ANALYTIC __attribute__ ((unused))          = 1;      // If called using OVER
 static uint64_t	CONTEXT_UNBOUNDED_PRECEEDING __attribute__ ((unused)) = 1 << 1; // Called using UNBOUNDED_PRECEEDING
 static uint64_t	CONTEXT_HAS_CURRENT_ROW __attribute__ ((unused))      = 1 << 2; // The current window contains the current row.
@@ -127,6 +128,10 @@ static uint64_t	CONTEXT_IS_RANGE_BASED __attribute__ ((unused))       = 1 << 3; 
 // The data referred to is different depending on the method called.
 static uint64_t	PARAM_IS_NULL     __attribute__ ((unused)) = 1;
 static uint64_t	PARAM_IS_CONSTANT __attribute__ ((unused)) = 1 << 1;
+
+// shorthand for the list of columns in the call sent to init()
+// first is the actual column name and second is the data type in Columnstore.
+typedef std::multimap<std::string, CalpontSystemCatalog::ColDataType> COL_TYPES;
 
 // This is the context class that is passed to all API callbacks
 // The framework potentially sets data here for each invocation of 
@@ -142,30 +147,34 @@ class mcsv1Context
 {
 public:
 	EXPORT mcsv1Context();
+	EXPORT mcsv1Context(mcsv1Context& rhs);
 	// The destructor is not virtual. mcsv1Context should never be subclassed
 	EXPORT ~mcsv1Context();
 
 	// Set an error message if something goes wrong
 	EXPORT void setErrorMessage(std::string errmsg);
 
+	// Get the previously set error message
+	EXPORT std::string& getErrorMessage();
+
 	// Set the flags as a set. Return the previous flags.
-	EXPORT uint64_t setFlags(uint64_t flags);
+	EXPORT uint64_t setRunFlags(uint64_t flags);
 	// return the flags
-	EXPORT uint64_t getFlags();
+	EXPORT uint64_t getRunFlags();
 
 	// The following set, get, clear and toggle methods can be used to manipulate
 	// multiple flags by ORing them together in the call sequence.
-	// Ex setFlag(UDAF_OVER_REQUIRED | UDAF_ORDER_REQUIRED);
+	// Ex setRunFlag(UDAF_OVER_REQUIRED | UDAF_ORDER_REQUIRED);
 	// sets both flags and returns true if BOTH flags are already set.
 	// 
 	// Set a specific flag and return its previous setting
-	EXPORT bool setFlag(uint64_t flag);
+	EXPORT bool setRunFlag(uint64_t flag);
 	// Get a specific flag
-	EXPORT bool getFlag(uint64_t flag);
+	EXPORT bool getRunFlag(uint64_t flag);
 	// clear a specific flag and return its previous setting
-	EXPORT bool clearFlag(uint64_t flag);
+	EXPORT bool clearRunFlag(uint64_t flag);
 	// toggle a specific flag and return its previous setting
-	EXPORT bool toggleFlag(uint64_t flag);
+	EXPORT bool toggleRunFlag(uint64_t flag);
 
 	// Use these to determine the way your UDA(n)F was called
 	// Valid in all method calls
@@ -176,7 +185,7 @@ public:
 
 	// Parameter refinement description accessors
 	// valid in nextValue, dropValue, evaluateCumulative and superEvaluate
-	int32_t getParameterCount();
+	size_t getParameterCount();
 
 	// Determine if an input parameter is NULL
 	// valid in nextValue, dropValue, evaluateCumulative and superEvaluate
@@ -188,9 +197,30 @@ public:
 	// valid in nextValue, dropValue and evaluateCumulative
 	EXPORT bool isParamConstant(int paramIdx);
 
+	// For getting the result type.
+	EXPORT CalpontSystemCatalog::ColDataType getResultType();
+
 	// For getting the decimal characteristics for the return value.
 	// These will be set by the Framework if DECIMAL is the default return type
 	EXPORT void getResultDecimalCharacteristics(int32_t decimals, int32_t precision);
+
+	// If you want to change the result type
+	// valid in init()
+	EXPORT bool setResultType(CalpontSystemCatalog::ColDataType resultType);
+
+	// For setting the decimal characteristics for the return value.
+	// This only makes sense if the return type is decimal. 
+	// valid in init()
+	EXPORT bool setResultDecimalCharacteristics(int32_t decimals, int32_t precision);
+
+	// For all types, get the return column width in bytes. Ex. INT will return 4.
+	EXPORT int32_t getColWidth();
+
+	// For non-numric return types, set the return column width. This will defaults
+	// to the the length of the input.
+	// valid in init()
+	EXPORT bool setColWidth(int32_t colWidth);
+
 	// If a method is known to take a while, call this periodically to see if something
 	// interupted the processing. If getInterrupted() returns true, then the executing
 	// method should clean up and exit.
@@ -232,7 +262,6 @@ public:
 	// There may be times you want to know the actual frame set by the caller
     EXPORT void  getStartFrame(WF_FRAME& startFrame, int32_t& startConstant);
 	EXPORT void  getEndFrame(WF_FRAME& endFrame, int32_t& endConstant);
-
 	
 	// Deep Equivalence
 	bool operator==(const mcsv1Context& c) const;
@@ -243,22 +272,26 @@ public:
 
 	// Get the name of the function
 	EXPORT const std::string& getName() const;
+
+	EXPORT mcsv1Context& operator=(mcsv1Context& rhs);
+	EXPORT mcsv1Context& copy(mcsv1Context& rhs);
 	
 private:
 
-	uint64_t bRunFlags;       // Set by the user to define the type of UDA(n)F
-	uint64_t bContextFlags;   // Set by the framework to define this specific call.
+	uint64_t fRunFlags;       // Set by the user to define the type of UDA(n)F
+	uint64_t fContextFlags;   // Set by the framework to define this specific call.
 	uint32_t fUserDataSize;
 	uint8_t* fUserData;
 	CalpontSystemCatalog::ColDataType fResultType;
+	int32_t  fColWidth;        // The length in bytes of the return type
 	int32_t  fResultDecimals;  // For Decimals, the number of digits to the right of the decimal
 	int32_t  fResultPrecision; // The max number of digits allowed in the decimal value
 	std::string errorMsg;
 	std::vector<uint32_t> dataFlags;  // one entry for each parameter
 	bool*    bInterrupted;            // Gets set to true by the Framework if something happens
 	uint64_t fRowsInPartition;        // Only valid in reset()
-	WF_FRAME fStartFrame;     // Is set to default to start, then modified by the actual frame in the cal
-	WF_FRAME fEndFrame;       // Is set to default to start, then modified by the actual frame in the cal
+	WF_FRAME fStartFrame;     // Is set to default to start, then modified by the actual frame in the call
+	WF_FRAME fEndFrame;       // Is set to default to start, then modified by the actual frame in the call
 	int32_t  fStartConstant;  // for start frame WFPRECEEDOMG or WF_FOLLOWING
 	int32_t  fEndConstant;    // for end frame WFPRECEEDOMG or WF_FOLLOWING
 	std::string functionName;
@@ -270,6 +303,12 @@ public:
 	EXPORT void createUserData();
 	EXPORT void freeUserData();
 	EXPORT void setName(std::string name);
+	EXPORT void setContextFlags(uint64_t flags);
+	EXPORT uint64_t getContextFlags();
+	EXPORT uint32_t getUserDataSize();
+	EXPORT std::vector<uint32_t>& getDataFlags();
+	EXPORT void setInterrupted(bool interrupted);
+	EXPORT void setInterrupted(bool* interrupted);
 };
 
 // Since aggregate functions can operate on any data type, we use the following structure
@@ -290,7 +329,7 @@ struct ColumnDatum
 	CalpontSystemCatalog::ColDataType dataType;   // defined in calpontsystemcatalog.h
 	boost::any  columnData;
 	uint32_t    decimals;   // If dataType is a DECIMAL type
-	ColumnDatum() : dataType(CalpontSystemCatalog::UNDEFINED){};
+	ColumnDatum() : dataType(CalpontSystemCatalog::UNDEFINED), decimals(0){};
 };
 
 // Override mcsv1_UDAF to build your User Defined Aggregate (UDAF) and/or 
@@ -312,7 +351,7 @@ public:
 		NOT_IMPLEMENTED = 2   // User UDA(n)F shouldn't return this
 	};
 	// Defaults OK
-	mcsv1_UDAF(mcsv1Context* context){};
+	mcsv1_UDAF(){};
 	virtual ~mcsv1_UDAF(){};
 
 	/**
@@ -320,25 +359,19 @@ public:
 	 * data. Called once per SQL statement. You can do any sanity 
 	 * checks here. 
 	 *  
-	 * colTypes (in) - A vector of ColTypes defining the parameters 
-	 * of the UDA(n)F call. 
+	 * colTypes (in) - A vector of ColDataType defining the 
+	 * parameters of the UDA(n)F call. These can be used to decide 
+	 * to override the default return type. If desired, the new 
+	 * return type can be set by context->setReturnType() and 
+	 * decimal precision can be set in context-> 
+	 * setResultDecimalCharacteristics. 
 	 *  
-	 * returnType (in/out) - the returnType of this call to the 
-	 * UDA(n)F. You can accept the default already set in 
-	 * returnType, or you may use the colTypes to decide what it 
-	 * should be and set it. 
-	 *  
-	 * decimals -(in/out) - if you set returnType to DECIMAL or 
-	 * UDECIMAL, then you may want to change the value of decimals, 
-	 * which is the number of digits to the right of the decimal 
-	 * place. 
-	 *  
-	 * Return false on any error, such as non-compatible colTypes.
+	 * Return mcsv1_UDAF::ERROR on any error, such as non-compatible
+	 * colTypes or wrong number of arguments. Else return 
+	 * mcsv1_UDAF::SUCCESS. 
 	 */
 	virtual ReturnCode init(mcsv1Context* context,
-							std::vector<CalpontSystemCatalog::ColDataType>& colTypes, 
-							CalpontSystemCatalog::ColDataType& returnType,
-							uint32_t& decimals) = 0;
+							COL_TYPES& colTypes) = 0;
 
 	/**
 	 * Mandatory. Completes the UDA(n)F. 
@@ -391,32 +424,41 @@ public:
 	 *  
 	 * valOut (out) - Set the aggregated value here. The datatype is
 	 * assumed to be the same as that set in the init() function; 
+	 *  
+	 * isNull (out) set to true if the result is NULL. valOut will 
+	 * be ignored. 
 	 */
-	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut) = 0;
+	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut, bool& isNull) = 0;
 
 	 /** 
 	  * Optional -- If defined, the server may run the UDAF in a 
-	  * distributed fashion. 
+	  * distributed fashion. Use setRunFlag(UDAF_MAYBE_DISTRIBUTED) 
+	  * to enable distributed UDAF. 
 	  *  
-	  * Get the aggregated value from a sub aggregation performed on 
-	  * the PM or multi-threaded aggregation on the UM. 
+	  * Perform an agggregation on rows partially aggregated by 
+	  * nextValue. Columnstore calls nextValue for each row on a 
+	  * given PM for a group (GROUP BY). subEvaluateis called to 
+	  * consolodate those values into a single instance of userData. 
+	  * As usual, keep your aggregated totals in context. The first 
+	  * time this is called for a group, reset() would have been 
+	  * called with this version of userData. 
 	  *  
-	  * Called for every new group if UDAF GROUP BY
+	  * Called for every partial data set in each group in GROUP BY
 	  *  
-	  * If the UDAF is running in a distributed fashion, subEvaluate
-	  * is called for each group on the PM. It will not have values 
-	  * for the groups that reside on other PMs. 
+	  * When subEvaluate has been called for all subAggregated data 
+	  * sets, Evaluate will be called with the same context as here.
 	  *  
-	  * valOut (out) - set this to the sub aggregation for the GROUP.
-	  * The datatype is assumed to be the same as that set in the 
-	  * init() function; 
+	  * valIn (In) - This is a pointer to a memory block of the size 
+	  * set in allocUserData. It will contain the value of userData 
+	  * as seen in the last call to NextValue for a given PM.  Don't 
+	  * assume it will be in the same place in memory -- it won't be.
+	  *  
 	  */
-	 virtual ReturnCode subEvaluate(mcsv1Context* context, 
-									boost::any& valOut);
+	 virtual ReturnCode subEvaluate(mcsv1Context* context, const void* valIn);
 
 	 /** 
 	  * Optional -- If defined, the server may run the UDAF in a 
-	  * distributed fashion. 
+	  * distributed fashion. set UDAF_MAYBE_DISTRIBUTED in u
 	  *  
 	  * Get the final aggregated value from a set of sub aggregations 
 	  * performed on the PMs or multi-threaded aggregation on the UM.
@@ -433,10 +475,13 @@ public:
 	  * valOut (out) - set this to the final aggregation value for 
 	  * the GROUP. The datatype is assumed to be the same as that set 
 	  * in the init() function; 
+	  *  
+	  * isNull (out) set to true if the result is NULL. valOut will 
+	  * be ignored. 
 	  */
 	virtual ReturnCode superEvaluate(mcsv1Context* context, 
 									 std::vector<boost::any>& valsIn,
-		                             boost::any& valOut);
+		                             boost::any& valOut, bool& isNull);
 
 	 /** 
 	  * Optional -- If defined, the server will call this instead of 
@@ -477,10 +522,13 @@ public:
 	 * valOut (out) - set this to the final aggregation value for 
 	 * the row. The datatype is assumed to be the same as that set 
 	 * in the init() function; 
+	 *  
+	 * isNull (out) set to true if the result is NULL. valOut will 
+	 * be ignored. 
 	 */
 	virtual ReturnCode evaluateCumulative(mcsv1Context* context, 
 									std::vector<boost::any>& valsIn,
-		                            boost::any& valOut);
+		                            boost::any& valOut, bool& isNull);
 
 protected:
 
@@ -491,11 +539,12 @@ protected:
  ***********************************************************************/
 // Function definitions for mcsv1Context
 inline mcsv1Context::mcsv1Context() : 
-    bRunFlags(0),
-    bContextFlags(0),
+    fRunFlags(0),
+    fContextFlags(0),
 	fUserDataSize(0),
     fUserData(NULL),
 	fResultType(CalpontSystemCatalog::UNDEFINED),
+	fColWidth(0),
     fResultDecimals(0),
     fResultPrecision(18),
 	bInterrupted(NULL),
@@ -507,10 +556,24 @@ inline mcsv1Context::mcsv1Context() :
 {
 }
 
+inline mcsv1Context::mcsv1Context(mcsv1Context& rhs) :
+    fUserData(NULL),
+	bInterrupted(NULL)
+{
+	copy(rhs);
+}
+
 // The destructor is not virtual. mcsv1Context should never be subclassed
 inline mcsv1Context::~mcsv1Context()
 {
 	if (fUserData) freeUserData();
+}
+
+inline mcsv1Context& mcsv1Context::operator=(mcsv1Context& rhs)
+{
+	fUserData = NULL;
+	bInterrupted = NULL;
+	return copy(rhs);
 }
 
 inline void mcsv1Context::setErrorMessage(std::string errmsg) 
@@ -518,65 +581,70 @@ inline void mcsv1Context::setErrorMessage(std::string errmsg)
 	errorMsg = errmsg;
 }
 
-inline uint64_t mcsv1Context::setFlags(uint64_t flags) 
+inline std::string& mcsv1Context::getErrorMessage()
 {
-	uint64_t f = bRunFlags; 
-	bRunFlags = flags; 
+	return errorMsg;
+}
+
+inline uint64_t mcsv1Context::setRunFlags(uint64_t flags) 
+{
+	uint64_t f = fRunFlags; 
+	fRunFlags = flags; 
 	return f;
 }
 
-inline uint64_t mcsv1Context::getFlags() 
+inline uint64_t mcsv1Context::getRunFlags() 
 {
-	return bRunFlags;
+	return fRunFlags;
 }
 
-inline bool mcsv1Context::setFlag(uint64_t flag) 
+inline bool mcsv1Context::setRunFlag(uint64_t flag) 
 {
-	bool b = bRunFlags & flag; 
-	bRunFlags |= flag; 
+	bool b = fRunFlags & flag; 
+	fRunFlags |= flag; 
 	return b;
 }
 
-inline bool mcsv1Context::getFlag(uint64_t flag) 
+inline bool mcsv1Context::getRunFlag(uint64_t flag) 
 {
-	return bRunFlags & flag;
+	return fRunFlags & flag;
 }
 
-inline bool mcsv1Context::clearFlag(uint64_t flag) 
+inline bool mcsv1Context::clearRunFlag(uint64_t flag) 
 {
-	bool b = bRunFlags & flag; 
-	bRunFlags &= ~flag; 
+	bool b = fRunFlags & flag; 
+	fRunFlags &= ~flag; 
 	return b;
 }
 
-inline bool mcsv1Context::toggleFlag(uint64_t flag) 
+inline bool mcsv1Context::toggleRunFlag(uint64_t flag) 
 {
-	bool b = bRunFlags & flag; 
-	bRunFlags ^= flag; 
+	bool b = fRunFlags & flag; 
+	fRunFlags ^= flag; 
 	return b;
 }
 
 inline bool mcsv1Context::isAnalytic() 
 {
-	return bContextFlags & CONTEXT_IS_ANALYTIC;
+	return fContextFlags & CONTEXT_IS_ANALYTIC;
 }
 
 inline bool mcsv1Context::isUnboundedPreceding() 
 {
-	return bContextFlags & CONTEXT_UNBOUNDED_PRECEEDING;
+	return fContextFlags & CONTEXT_UNBOUNDED_PRECEEDING;
 }
 
 inline bool mcsv1Context::isWindowHasCurrentRow() 
 {
-	return bContextFlags & CONTEXT_HAS_CURRENT_ROW;
+	return fContextFlags & CONTEXT_HAS_CURRENT_ROW;
 }
 
 inline bool mcsv1Context::isRangeBased() 
 {
-	return bContextFlags & CONTEXT_IS_RANGE_BASED;
+	return fContextFlags & CONTEXT_IS_RANGE_BASED;
 }
 
-inline int32_t mcsv1Context::getParameterCount() 
+inline size_t mcsv1Context::getParameterCount() 
 {
 	return dataFlags.size();
 }
@@ -591,11 +659,48 @@ inline bool mcsv1Context::isParamConstant(int paramIdx)
 	return dataFlags[paramIdx] & PARAM_IS_CONSTANT;
 }
 
+inline CalpontSystemCatalog::ColDataType mcsv1Context::getResultType() 
+{
+	return fResultType;
+}
+
+inline bool mcsv1Context::setResultType(CalpontSystemCatalog::ColDataType resultType) 
+{
+	fResultType = resultType;
+	return true;  // We may want to sanity check here.
+}
+
 inline void mcsv1Context::getResultDecimalCharacteristics(int32_t decimals, int32_t precision)
 {
 	decimals = fResultDecimals; 
 	precision = fResultPrecision; 
 	return;
+}
+
+inline bool mcsv1Context::setResultDecimalCharacteristics(int32_t decimals, int32_t precision)
+{
+	fResultDecimals = decimals;
+	fResultPrecision = precision;
+	return true;
+}
+
+inline bool mcsv1Context::setColWidth(int32_t colWidth)
+{
+	fColWidth = colWidth;
+	return true;
+}
+
+inline void mcsv1Context::setInterrupted(bool interrupted) 
+{
+	if (bInterrupted)
+	{
+		*bInterrupted = interrupted;
+	}
+}
+
+inline void mcsv1Context::setInterrupted(bool* interrupted) 
+{
+	bInterrupted = interrupted;
 }
 
 inline bool mcsv1Context::getInterrupted() 
@@ -612,10 +717,8 @@ inline uint64_t mcsv1Context::getRowsInPartition()
 	return fRowsInPartition;
 }
 
-// TODO: We need to figure out how to handle memory for specific subaggregates.
 inline void mcsv1Context::allocUserData(int bytes)
 {
-	// For now, a simple malloc
 	fUserDataSize = bytes;
 }
 
@@ -626,6 +729,7 @@ inline uint8_t* mcsv1Context::getUserData()
 
 inline void mcsv1Context::createUserData() 
 {
+	// For now, a simple malloc
 	if (fUserData)
 	{
 		freeUserData();
@@ -646,6 +750,18 @@ inline bool mcsv1Context::setDefaultWindowFrame(WF_FRAME defaultStartFrame,
 	return true;
 }
 
+inline void mcsv1Context::getStartFrame(WF_FRAME& startFrame, int32_t& startConstant)
+{
+	startFrame = fStartFrame;
+	startConstant = fStartConstant;
+}
+
+inline void mcsv1Context::getEndFrame(WF_FRAME& endFrame, int32_t& endConstant)
+{
+	endFrame = fEndFrame;
+	endConstant = fEndConstant;
+}
+
 inline const std::string& mcsv1Context::getName() const
 {
 	return functionName;
@@ -654,7 +770,10 @@ inline const std::string& mcsv1Context::getName() const
 // Not to be used by UDA(n)F developer
 inline void mcsv1Context::freeUserData() 
 {
-	free(fUserData);
+	if (fUserData)
+	{
+		free(fUserData);
+	}
 	fUserData = NULL;
 }
 
@@ -663,15 +782,34 @@ inline void mcsv1Context::setName(std::string name)
 	functionName = name;
 }
 
-inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::subEvaluate(mcsv1Context* context, 
-													  boost::any& valOut)
+inline void mcsv1Context::setContextFlags(uint64_t flags)
+{
+	fContextFlags = flags;
+}
+
+inline uint64_t mcsv1Context::getContextFlags()
+{
+	return fContextFlags;
+}
+
+inline uint32_t mcsv1Context::getUserDataSize()
+{
+	return fUserDataSize;
+}
+
+inline std::vector<uint32_t>& mcsv1Context::getDataFlags()
+{
+	return dataFlags;
+}
+
+inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::subEvaluate(mcsv1Context* context, const void* valIn)
 {
 	return NOT_IMPLEMENTED;
 }
 
 inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::superEvaluate(mcsv1Context* context, 
 														std::vector<boost::any>& valsIn,
-														boost::any& valOut)
+														boost::any& valOut, bool& isNull)
 {
 	return NOT_IMPLEMENTED;
 }
@@ -684,7 +822,7 @@ inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::dropValue(mcsv1Context* context,
 
 inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::evaluateCumulative(mcsv1Context* context, 
 															 std::vector<boost::any>& valsIn,
-															 boost::any& valOut)
+															 boost::any& valOut, bool& isNull)
 {
 	return NOT_IMPLEMENTED;
 }

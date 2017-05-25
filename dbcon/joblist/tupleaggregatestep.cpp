@@ -47,6 +47,7 @@ using namespace config;
 
 #include "calpontsystemcatalog.h"
 #include "aggregatecolumn.h"
+#include "udafcolumn.h"
 #include "arithmeticcolumn.h"
 #include "functioncolumn.h"
 #include "constantcolumn.h"
@@ -100,6 +101,7 @@ inline RowAggFunctionType functionIdMap(int planFuncId)
 		case AggregateColumn::BIT_XOR:                  return ROWAGG_BIT_XOR;
 		case AggregateColumn::GROUP_CONCAT:             return ROWAGG_GROUP_CONCAT;
 		case AggregateColumn::CONSTANT:                 return ROWAGG_CONSTANT;
+		case AggregateColumn::UDAF:                     return ROWAGG_UDAF;
 		default:                                        return ROWAGG_FUNCT_UNDEFINE;
 	}
 }
@@ -1224,6 +1226,11 @@ void TupleAggregateStep::prep1PhaseAggregate(
 			}
 			break;
 
+			case ROWAGG_UDAF:
+			{
+				// TODO: What to do
+			}
+
 			default:
 			{
 				ostringstream emsg;
@@ -2344,22 +2351,22 @@ void TupleAggregateStep::prep2PhasesAggregate(
 {
 	// check if there are any aggregate columns
 	// a vector that has the aggregate function to be done by PM
-	vector<pair<uint32_t, int> > aggColVec;
+//	vector<pair<uint32_t, int> > aggColVec;
 	set<uint32_t> avgSet;
 	vector<std::pair<uint32_t, int> >& returnedColVec = jobInfo.returnedColVec;
-	for (uint64_t i = 0; i < returnedColVec.size(); i++)
-	{
+//	for (uint64_t i = 0; i < returnedColVec.size(); i++)
+//	{
 		// skip if not an aggregation column
-		if (returnedColVec[i].second == 0)
-			continue;
+//		if (returnedColVec[i].second == 0)
+//			continue;
 
-		aggColVec.push_back(returnedColVec[i]);
+//		aggColVec.push_back(returnedColVec[i]);
 
 		// remember if a column has an average function,
 		// with avg function, no need for separate sum or count_column_name
-		if (returnedColVec[i].second == AggregateColumn::AVG)
-			avgSet.insert(returnedColVec[i].first);
-	}
+//		if (returnedColVec[i].second == AggregateColumn::AVG)
+//			avgSet.insert(returnedColVec[i].first);
+//	}
 
 	// populate the aggregate rowgroup on PM and UM
 	// PM: projectedRG   -> aggregateRGPM
@@ -2480,11 +2487,15 @@ void TupleAggregateStep::prep2PhasesAggregate(
 		}
 
 		// vectors for aggregate functions
-		for (uint64_t i = 0; i < aggColVec.size(); i++)
+		for (uint64_t i = 0; i < returnedColVec.size(); i++)
 		{
-			uint32_t aggKey = aggColVec[i].first;
-			RowAggFunctionType aggOp = functionIdMap(aggColVec[i].second);
-			RowAggFunctionType stats = statsFuncIdMap(aggColVec[i].second);
+			// skip if not an aggregation column
+			if (returnedColVec[i].second == 0)
+				continue;
+
+			uint32_t aggKey = returnedColVec[i].first;
+			RowAggFunctionType aggOp = functionIdMap(returnedColVec[i].second);
+			RowAggFunctionType stats = statsFuncIdMap(returnedColVec[i].second);
 
 			// skip on PM if this is a constant
 			if (aggOp == ROWAGG_CONSTANT)
@@ -2504,7 +2515,8 @@ void TupleAggregateStep::prep2PhasesAggregate(
 			}
 
 			if ((aggOp == ROWAGG_SUM || aggOp == ROWAGG_COUNT_COL_NAME) &&
-				(avgSet.find(aggKey) != avgSet.end()))
+				(returnedColVec[i].second == AggregateColumn::AVG))
+//				(avgSet.find(aggKey) != avgSet.end()))
 				// skip sum / count(column) if avg is also selected
 				continue;
 
@@ -2513,7 +2525,23 @@ void TupleAggregateStep::prep2PhasesAggregate(
 				continue;
 
 			uint64_t colProj = projColPosMap[aggKey];
-			SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colProj, colAggPm));
+			SP_ROWAGG_FUNC_t funct;
+			if (aggOp == ROWAGG_UDAF)
+			{
+				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+				if (udafc)
+				{
+					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colProj, colAggPm));
+				}
+				else
+				{
+					throw logic_error("(8)A UDAF function is called but there's no UDAFColumn");
+				}
+			}
+			else
+			{
+				funct.reset(new RowAggFunctionCol(aggOp, stats, colProj, colAggPm));
+			}
 			functionVecPm.push_back(funct);
 
 			aggFuncMap.insert(make_pair(make_pair(aggKey, aggOp), colAggPm));
@@ -2667,7 +2695,17 @@ void TupleAggregateStep::prep2PhasesAggregate(
 					colAggPm++;
 				}
 				break;
-
+				case ROWAGG_UDAF:
+				{
+					oidsAggPm.push_back(oidsProj[colProj]);
+					keysAggPm.push_back(aggKey);
+					scaleAggPm.push_back(scaleProj[colProj]);
+					precisionAggPm.push_back(precisionProj[colProj]);
+					typeAggPm.push_back(typeProj[colProj]);
+					widthAggPm.push_back(width[colProj]);
+					colAggPm++;
+					break;
+				}
 				default:
 				{
 					ostringstream emsg;
@@ -2849,7 +2887,16 @@ void TupleAggregateStep::prep2PhasesAggregate(
 			// update the aggregate function vector
 			else
 			{
-				SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colPm, i));
+				SP_ROWAGG_FUNC_t funct;
+				if (aggOp == ROWAGG_UDAF)
+				{
+					UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colPm, i));
+				}
+				else
+				{
+					funct.reset(new RowAggFunctionCol(aggOp, stats, colPm, i));
+				}
 				if (aggOp == ROWAGG_COUNT_NO_OP)
 					funct->fAuxColumnIndex = colPm;
 				else if (aggOp == ROWAGG_CONSTANT)
@@ -2909,14 +2956,33 @@ void TupleAggregateStep::prep2PhasesAggregate(
 			}
 		}
 
-		// add auxiliary fields for statistics functions
+		// add auxiliary fields for UDAF and statistics functions
 		for (uint64_t i = 0; i < functionVecUm.size(); i++)
 		{
+			uint64_t j = functionVecUm[i]->fInputColumnIndex;
+
+			if (functionVecUm[i]->fAggFunction == ROWAGG_UDAF)
+			{
+				// UDAF user data
+				RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(functionVecUm[i].get());
+				if (!udafFuncCol)
+				{
+					throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				functionVecUm[i]->fAuxColumnIndex = lastCol++;
+				oidsAggUm.push_back(oidsAggUm[j]); // Dummy?
+				keysAggUm.push_back(keysAggUm[j]); // Dummy?
+				scaleAggUm.push_back(0);
+				precisionAggUm.push_back(0);
+				typeAggUm.push_back(CalpontSystemCatalog::VARBINARY);
+				widthAggUm.push_back(udafFuncCol->fUDAFContext.getUserDataSize());
+				continue;
+			}
+
 			if (functionVecUm[i]->fAggFunction != ROWAGG_STATS)
 				continue;
 
 			functionVecUm[i]->fAuxColumnIndex = lastCol;
-			uint64_t j = functionVecUm[i]->fInputColumnIndex;
 
 			// sum(x)
 			oidsAggUm.push_back(oidsAggUm[j]);

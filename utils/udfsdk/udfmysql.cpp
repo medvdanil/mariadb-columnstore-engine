@@ -182,7 +182,7 @@ long long idb_isnull(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *erro
 struct allnull_data
 {
   ulonglong	totalQuantity;
-  bool 	    bAllNull;
+  ulonglong	totalNulls;
 };
  
 #ifdef _MSC_VER
@@ -191,11 +191,11 @@ __declspec(dllexport)
 my_bool allnull_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
 {
 	struct allnull_data* data;
-	if (args->arg_count != 1)
-	{
-		strcpy(message,"allnull() requires one argument");
-		return 1;
-	}
+//	if (args->arg_count != 1)
+//	{
+//		strcpy(message,"allnull() requires one argument");
+//		return 1;
+//	}
 
 	if (!(data = (struct allnull_data*) malloc(sizeof(struct allnull_data))))
 	{
@@ -203,7 +203,7 @@ my_bool allnull_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
 		return 1;
 	}
 	data->totalQuantity	= 0;
-	data->bAllNull	= true;
+	data->totalNulls	= 0;
 
 	initid->ptr = (char*)data;
 
@@ -225,7 +225,7 @@ long long allnull(UDF_INIT* initid, UDF_ARGS* args __attribute__((unused)),
 				  char* is_null, char* error __attribute__((unused)))
 {
 	struct allnull_data* data = (struct allnull_data*)initid->ptr;
-	return data->bAllNull;
+	return data->totalQuantity > 0 && data->totalNulls == data->totalQuantity;
 }
 
 void
@@ -234,7 +234,7 @@ allnull_clear(UDF_INIT* initid, char* is_null __attribute__((unused)),
 {
 	struct allnull_data* data = (struct allnull_data*)initid->ptr;
 	data->totalQuantity = 0;
-	data->bAllNull      = false;
+	data->totalNulls    = 0;
 }
 
 void
@@ -247,10 +247,9 @@ allnull_add(UDF_INIT* initid, UDF_ARGS* args,
 	data->totalQuantity++;
 	if (!word)
 	{
-		data->bAllNull = true;
+		data->totalNulls++;
 	}
 }
-
 
 }
 // vim:ts=4 sw=4:
