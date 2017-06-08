@@ -3225,7 +3225,8 @@ void associateTupleJobSteps(JobStepVector& querySteps, JobStepVector& projectSte
 	for (uint64_t i = 0; i < jobInfo.tableList.size(); i++)
 	{
 		uint32_t tableUid = jobInfo.tableList[i];
-		tableInfoMap[tableUid] = TableInfo();
+		TableInfo newTableInfo;
+		tableInfoMap[tableUid] = newTableInfo;
 		tableInfoMap[tableUid].fTableOid = jobInfo.keyInfo->tupleKeyVec[tableUid].fId;
 		tableInfoMap[tableUid].fName = jobInfo.keyInfo->keyName[tableUid];
 		tableInfoMap[tableUid].fAlias = jobInfo.keyInfo->tupleKeyVec[tableUid].fTable;

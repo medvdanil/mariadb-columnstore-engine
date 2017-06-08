@@ -697,8 +697,18 @@ SJSTEP TupleAggregateStep::prepAggregate(SJSTEP& step, JobInfo& jobInfo)
 				ConstantColumn* cc = dynamic_cast<ConstantColumn*>(ac->constCol().get());
 				idbassert(cc != NULL);   // @bug5261
 				bool isNull = (ConstantColumn::NULLDATA == cc->type());
-				constAggDataVec.push_back(
-					ConstantAggData(cc->constval(), functionIdMap(ac->aggOp()), isNull));
+				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.deliveredCols[idx].get());
+				if (udafc)
+				{
+					constAggDataVec.push_back(
+						ConstantAggData(cc->constval(), udafc->getContext().getName(),
+										functionIdMap(ac->aggOp()), isNull));
+				}
+				else
+				{
+					constAggDataVec.push_back(
+						ConstantAggData(cc->constval(), functionIdMap(ac->aggOp()), isNull));
+				}
 			}
 		}
 	}
@@ -1099,7 +1109,38 @@ void TupleAggregateStep::prep1PhaseAggregate(
 			}
 		}
 
-		SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colProj, i));
+		SP_ROWAGG_FUNC_t funct;
+		if (aggOp == ROWAGG_UDAF)
+		{
+			UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+			if (udafc)
+			{
+				mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(udafc->getContext().getName());
+				if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+				{
+					std::ostringstream errmsg;
+					errmsg << "prep1PhasesAggregate: A UDAF function, " << udafc->getContext().getName() << 
+						", is called but there's no entry in UDAF_MAP";
+					throw std::logic_error(errmsg.str());
+				}
+				mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+				rc = funcIter->second->reset(&udafc->getContext());
+				if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+				{
+					throw logging::QueryDataExcept(udafc->getContext().getErrorMessage(), logging::aggregateFuncErr);
+				}
+				// Create a RowAggFunctionCol (UDAF subtype) with the context.
+				funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colProj, i));
+			}
+			else
+			{
+				throw logic_error("prep1PhasesAggregate: A UDAF function is called but there's no UDAFColumn");
+			}
+		}
+		else
+		{
+			funct.reset(new RowAggFunctionCol(aggOp, stats, colProj, i));
+		}
 		functionVec.push_back(funct);
 
 		switch (aggOp)
@@ -1228,7 +1269,21 @@ void TupleAggregateStep::prep1PhaseAggregate(
 
 			case ROWAGG_UDAF:
 			{
-				// TODO: What to do
+				RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(funct.get());
+				if (!udafFuncCol)
+				{
+					throw logic_error("prep1PhaseAggregate: A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				// Return column
+				int32_t scale=0, precision=0;
+				udafFuncCol->fUDAFContext.getResultDecimalCharacteristics(scale, precision);
+				oidsAgg.push_back(oidsProj[colProj]);
+				keysAgg.push_back(key);
+				scaleAgg.push_back(scale);
+				precisionAgg.push_back(precision);
+				typeAgg.push_back(udafFuncCol->fUDAFContext.getResultType());
+				widthAgg.push_back(udafFuncCol->fUDAFContext.getColWidth());
+				break;
 			}
 
 			default:
@@ -1292,14 +1347,34 @@ void TupleAggregateStep::prep1PhaseAggregate(
 		}
 	}
 
-	// add auxiliary fields for statistics functions
+	// add auxiliary fields for UDAF and statistics functions
 	for (uint64_t i = 0; i < functionVec.size(); i++)
 	{
+		uint64_t j = functionVec[i]->fInputColumnIndex;
+
+		if (functionVec[i]->fAggFunction == ROWAGG_UDAF)
+		{
+			// UDAF user data
+			RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(functionVec[i].get());
+			if (!udafFuncCol)
+			{
+				throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+			}
+			functionVec[i]->fAuxColumnIndex = lastCol++;
+			oidsAgg.push_back(oidsAgg[j]);
+			keysAgg.push_back(keysAgg[j]);
+			scaleAgg.push_back(0);
+			precisionAgg.push_back(0);
+			precisionAgg.push_back(0);
+			typeAgg.push_back(CalpontSystemCatalog::VARBINARY);
+			widthAgg.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2);
+			continue;
+		}
+
 		if (functionVec[i]->fAggFunction != ROWAGG_STATS)
 			continue;
 
 		functionVec[i]->fAuxColumnIndex = lastCol;
-		uint64_t j = functionVec[i]->fInputColumnIndex;
 
 		// sum(x)
 		oidsAgg.push_back(oidsAgg[j]);
@@ -1534,7 +1609,39 @@ void TupleAggregateStep::prep1PhaseDistinctAggregate(
 				continue;
 
 			uint64_t colProj = projColPosMap[aggKey];
-			SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colProj, colAgg));
+
+			SP_ROWAGG_FUNC_t funct;
+			if (aggOp == ROWAGG_UDAF)
+			{
+				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+				if (udafc)
+				{
+					mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(udafc->getContext().getName());
+					if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+					{
+						std::ostringstream errmsg;
+						errmsg << "prep1PhaseDistinctAggregate: A UDAF function, " << udafc->getContext().getName() << 
+							", is called but there's no entry in UDAF_MAP";
+						throw std::logic_error(errmsg.str());
+					}
+					mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+					rc = funcIter->second->reset(&udafc->getContext());
+					if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+					{
+						throw logging::QueryDataExcept(udafc->getContext().getErrorMessage(), logging::aggregateFuncErr);
+					}
+					// Create a RowAggFunctionCol (UDAF subtype) with the context.
+					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colProj, colAgg));
+				}
+				else
+				{
+					throw logic_error("prep1PhaseDistinctAggregate: A UDAF function is called but there's no UDAFColumn");
+				}
+			}
+			else
+			{
+				funct.reset(new RowAggFunctionCol(aggOp, stats, colProj, colAgg));
+			}
 			functionVec1.push_back(funct);
 
 			aggFuncMap.insert(make_pair(make_pair(aggKey, aggOp), colAgg));
@@ -1677,6 +1784,34 @@ void TupleAggregateStep::prep1PhaseDistinctAggregate(
 					colAgg++;
 				}
 				break;
+
+				case ROWAGG_UDAF:
+				{
+					RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(funct.get());
+					if (!udafFuncCol)
+					{
+						throw logic_error("prep1PhaseDistinctAggregate A UDAF function is called but there's no RowUDAFFunctionCol");
+					}
+					// Return column
+					int32_t scale=0, precision=0;
+					udafFuncCol->fUDAFContext.getResultDecimalCharacteristics(scale, precision);
+					oidsAgg.push_back(oidsProj[colProj]);
+					keysAgg.push_back(aggKey);
+					scaleAgg.push_back(scale);
+					precisionAgg.push_back(precision);
+					typeAgg.push_back(udafFuncCol->fUDAFContext.getResultType());
+					widthAgg.push_back(udafFuncCol->fUDAFContext.getColWidth());
+					colAgg++;
+					// UDAF UserData struct
+					oidsAgg.push_back(oidsProj[colProj]);
+					keysAgg.push_back(aggKey);
+					scaleAgg.push_back(0);
+					precisionAgg.push_back(0);
+					typeAgg.push_back(CalpontSystemCatalog::VARBINARY);
+					widthAgg.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2); // Binary column needs +2 for length bytes
+					funct->fAuxColumnIndex = colAgg++;
+					break;
+				}
 
 				default:
 				{
@@ -2098,13 +2233,35 @@ void TupleAggregateStep::prep1PhaseDistinctAggregate(
 		}
 
 		// add auxiliary fields for statistics functions
+//		for (uint64_t i = 0; i < functionVec2.size(); i++)
+//		{
+		// add auxiliary fields for UDAF and statistics functions
 		for (uint64_t i = 0; i < functionVec2.size(); i++)
 		{
+			uint64_t j = functionVec2[i]->fInputColumnIndex;
+
+			if (functionVec2[i]->fAggFunction == ROWAGG_UDAF)
+			{
+				// UDAF user data
+				RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(functionVec2[i].get());
+				if (!udafFuncCol)
+				{
+					throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				functionVec2[i]->fAuxColumnIndex = lastCol++;
+				oidsAggDist.push_back(oidsAggDist[j]); // Dummy?
+				keysAggDist.push_back(keysAggDist[j]); // Dummy?
+				scaleAggDist.push_back(0);
+				precisionAggDist.push_back(0);
+				typeAggDist.push_back(CalpontSystemCatalog::VARBINARY);
+				widthAggDist.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2);
+				continue;
+			}
+
 			if (functionVec2[i]->fAggFunction != ROWAGG_STATS)
 				continue;
 
 			functionVec2[i]->fAuxColumnIndex = lastCol;
-			uint64_t j = functionVec2[i]->fInputColumnIndex;
 
 			// sum(x)
 			oidsAggDist.push_back(oidsAggDist[j]);
@@ -2531,11 +2688,26 @@ void TupleAggregateStep::prep2PhasesAggregate(
 				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
 				if (udafc)
 				{
+					mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(udafc->getContext().getName());
+					if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+					{
+						std::ostringstream errmsg;
+						errmsg << "prep2PhasesAggregate: A UDAF function, " << udafc->getContext().getName() << 
+							", is called but there's no entry in UDAF_MAP";
+						throw std::logic_error(errmsg.str());
+					}
+					mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+					rc = funcIter->second->reset(&udafc->getContext());
+					if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+					{
+						throw logging::QueryDataExcept(udafc->getContext().getErrorMessage(), logging::aggregateFuncErr);
+					}
+					// Create a RowAggFunctionCol (UDAF subtype) with the context.
 					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colProj, colAggPm));
 				}
 				else
 				{
-					throw logic_error("(8)A UDAF function is called but there's no UDAFColumn");
+					throw logic_error("prep2PhasesAggregate: A UDAF function is called but there's no UDAFColumn");
 				}
 			}
 			else
@@ -2697,13 +2869,29 @@ void TupleAggregateStep::prep2PhasesAggregate(
 				break;
 				case ROWAGG_UDAF:
 				{
+					RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(funct.get());
+					if (!udafFuncCol)
+					{
+						throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+					}
+					// Return column
+					int32_t scale=0, precision=0;
+					udafFuncCol->fUDAFContext.getResultDecimalCharacteristics(scale, precision);
 					oidsAggPm.push_back(oidsProj[colProj]);
 					keysAggPm.push_back(aggKey);
-					scaleAggPm.push_back(scaleProj[colProj]);
-					precisionAggPm.push_back(precisionProj[colProj]);
-					typeAggPm.push_back(typeProj[colProj]);
-					widthAggPm.push_back(width[colProj]);
+					scaleAggPm.push_back(scale);
+					precisionAggPm.push_back(precision);
+					typeAggPm.push_back(udafFuncCol->fUDAFContext.getResultType());
+					widthAggPm.push_back(udafFuncCol->fUDAFContext.getColWidth());
 					colAggPm++;
+					// UDAF UserData struct
+					oidsAggPm.push_back(oidsProj[colProj]);
+					keysAggPm.push_back(aggKey);
+					scaleAggPm.push_back(0);
+					precisionAggPm.push_back(0);
+					typeAggPm.push_back(CalpontSystemCatalog::VARBINARY);
+					widthAggPm.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2); // Binary column needs +2 for length bytes
+					funct->fAuxColumnIndex = colAggPm++;
 					break;
 				}
 				default:
@@ -2975,7 +3163,7 @@ void TupleAggregateStep::prep2PhasesAggregate(
 				scaleAggUm.push_back(0);
 				precisionAggUm.push_back(0);
 				typeAggUm.push_back(CalpontSystemCatalog::VARBINARY);
-				widthAggUm.push_back(udafFuncCol->fUDAFContext.getUserDataSize());
+				widthAggUm.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2);
 				continue;
 			}
 
@@ -3236,7 +3424,38 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 				continue;
 
 			uint64_t colProj = projColPosMap[aggKey];
-			SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colProj, colAggPm));
+			SP_ROWAGG_FUNC_t funct;
+			if (aggOp == ROWAGG_UDAF)
+			{
+				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+				if (udafc)
+				{
+					mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(udafc->getContext().getName());
+					if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+					{
+						std::ostringstream errmsg;
+						errmsg << "prep2PhasesAggregate: A UDAF function, " << udafc->getContext().getName() << 
+							", is called but there's no entry in UDAF_MAP";
+						throw std::logic_error(errmsg.str());
+					}
+					mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+					rc = funcIter->second->reset(&udafc->getContext());
+					if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+					{
+						throw logging::QueryDataExcept(udafc->getContext().getErrorMessage(), logging::aggregateFuncErr);
+					}
+					// Create a RowAggFunctionCol (UDAF subtype) with the context.
+					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colProj, colAggPm));
+				}
+				else
+				{
+					throw logic_error("prep2PhasesDistinctAggregate: A UDAF function is called but there's no UDAFColumn");
+				}
+			}
+			else
+			{
+				funct.reset(new RowAggFunctionCol(aggOp, stats, colProj, colAggPm));
+			}
 			functionVecPm.push_back(funct);
 
 			aggFuncMap.insert(make_pair(make_pair(aggKey, aggOp), colAggPm));
@@ -3380,6 +3599,34 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 				}
 				break;
 
+				case ROWAGG_UDAF:
+				{
+					RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(funct.get());
+					if (!udafFuncCol)
+					{
+						throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+					}
+					// Return column
+					int32_t scale=0, precision=0;
+					udafFuncCol->fUDAFContext.getResultDecimalCharacteristics(scale, precision);
+					oidsAggPm.push_back(oidsProj[colProj]);
+					keysAggPm.push_back(aggKey);
+					scaleAggPm.push_back(scale);
+					precisionAggPm.push_back(precision);
+					typeAggPm.push_back(udafFuncCol->fUDAFContext.getResultType());
+					widthAggPm.push_back(udafFuncCol->fUDAFContext.getColWidth());
+					colAggPm++;
+					// UDAF UserData struct
+					oidsAggPm.push_back(oidsProj[colProj]);
+					keysAggPm.push_back(aggKey);
+					scaleAggPm.push_back(0);
+					precisionAggPm.push_back(0);
+					typeAggPm.push_back(CalpontSystemCatalog::VARBINARY);
+					widthAggPm.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2); // Binary column needs +2 for length bytes
+					funct->fAuxColumnIndex = colAggPm++;
+					break;
+				}
+
 				default:
 				{
 					ostringstream emsg;
@@ -3403,13 +3650,27 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 
 		for (uint32_t idx = 0; idx < functionVecPm.size(); idx++)
 		{
+			SP_ROWAGG_FUNC_t funct;
 			SP_ROWAGG_FUNC_t funcPm = functionVecPm[idx];
-			SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(
-				funcPm->fAggFunction,
-				funcPm->fStatsFunction,
-				funcPm->fOutputColumnIndex,
-				funcPm->fOutputColumnIndex,
-				funcPm->fAuxColumnIndex));
+			// UDAF support
+			if (funcPm->fAggFunction == ROWAGG_UDAF)
+			{
+				RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(funcPm.get());
+				funct.reset(new RowUDAFFunctionCol(
+					udafFuncCol->fUDAFContext,
+					udafFuncCol->fOutputColumnIndex,
+					udafFuncCol->fOutputColumnIndex,
+					udafFuncCol->fAuxColumnIndex));
+			}
+			else
+			{
+				funct.reset(new RowAggFunctionCol(
+					funcPm->fAggFunction,
+					funcPm->fStatsFunction,
+					funcPm->fOutputColumnIndex,
+					funcPm->fOutputColumnIndex,
+					funcPm->fAuxColumnIndex));
+			}
 			functionNoDistVec.push_back(funct);
 		}
 
@@ -3677,7 +3938,16 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 			// update the aggregate function vector
 			else
 			{
-				SP_ROWAGG_FUNC_t funct(new RowAggFunctionCol(aggOp, stats, colUm, i));
+				SP_ROWAGG_FUNC_t funct;
+				if (aggOp == ROWAGG_UDAF)
+				{
+					UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(jobInfo.nonConstCols[i].get());
+					funct.reset(new RowUDAFFunctionCol(udafc->getContext(), colUm, i));
+				}
+				else
+				{
+					funct.reset(new RowAggFunctionCol(aggOp, stats, colUm, i));
+				}
 				if (aggOp == ROWAGG_COUNT_NO_OP)
 					funct->fAuxColumnIndex = colUm;
 				else if (aggOp == ROWAGG_CONSTANT)
@@ -3770,14 +4040,32 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 			}
 		}
 
-		// add auxiliary fields for statistics functions
+		// add auxiliary fields for UDAF and statistics functions
 		for (uint64_t i = 0; i < functionVecUm.size(); i++)
 		{
+			uint64_t j = functionVecUm[i]->fInputColumnIndex;
+
+			if (functionVecUm[i]->fAggFunction == ROWAGG_UDAF)
+			{
+				// UDAF user data
+				RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(functionVecUm[i].get());
+				if (!udafFuncCol)
+				{
+					throw logic_error("(9)A UDAF function is called but there's no RowUDAFFunctionCol");
+				}
+				functionVecUm[i]->fAuxColumnIndex = lastCol++;
+				oidsAggUm.push_back(oidsAggUm[j]); // Dummy?
+				keysAggUm.push_back(keysAggUm[j]); // Dummy?
+				scaleAggUm.push_back(0);
+				precisionAggUm.push_back(0);
+				typeAggUm.push_back(CalpontSystemCatalog::VARBINARY);
+				widthAggUm.push_back(udafFuncCol->fUDAFContext.getUserDataSize()+2);
+				continue;
+			}
 			if (functionVecUm[i]->fAggFunction != ROWAGG_STATS)
 				continue;
 
 			functionVecUm[i]->fAuxColumnIndex = lastCol;
-			uint64_t j = functionVecUm[i]->fInputColumnIndex;
 
 			// sum(x)
 			oidsAggDist.push_back(oidsAggDist[j]);
@@ -3946,27 +4234,39 @@ void TupleAggregateStep::prep2PhasesDistinctAggregate(
 				vector<SP_ROWAGG_FUNC_t>::iterator it = functionVecUm.begin();
 				while (it != functionVecUm.end())
 				{
+					SP_ROWAGG_FUNC_t funct;
 					SP_ROWAGG_FUNC_t f = *it++;
-					if ((f->fOutputColumnIndex == k) &&
-						(f->fAggFunction == ROWAGG_COUNT_ASTERISK ||
-						 f->fAggFunction == ROWAGG_COUNT_COL_NAME ||
-						 f->fAggFunction == ROWAGG_SUM ||
-						 f->fAggFunction == ROWAGG_AVG ||
-						 f->fAggFunction == ROWAGG_MIN ||
-						 f->fAggFunction == ROWAGG_MAX ||
-						 f->fAggFunction == ROWAGG_STATS   ||
-						 f->fAggFunction == ROWAGG_BIT_AND ||
-						 f->fAggFunction == ROWAGG_BIT_OR  ||
-						 f->fAggFunction == ROWAGG_BIT_XOR ||
-						 f->fAggFunction == ROWAGG_CONSTANT))
+					if (f->fOutputColumnIndex == k) 
 					{
-						SP_ROWAGG_FUNC_t funct(
-							new RowAggFunctionCol(
-								f->fAggFunction,
-								f->fStatsFunction,
-								f->fInputColumnIndex,
-								f->fOutputColumnIndex,
-								f->fAuxColumnIndex));
+						if (f->fAggFunction == ROWAGG_UDAF)
+						{
+							RowUDAFFunctionCol* udafFuncCol = dynamic_cast<RowUDAFFunctionCol*>(f.get());
+							funct.reset(new RowUDAFFunctionCol(
+								udafFuncCol->fUDAFContext,
+								udafFuncCol->fInputColumnIndex,
+								udafFuncCol->fOutputColumnIndex,
+								udafFuncCol->fAuxColumnIndex));
+						}
+						else if (f->fAggFunction == ROWAGG_COUNT_ASTERISK ||
+								 f->fAggFunction == ROWAGG_COUNT_COL_NAME ||
+								 f->fAggFunction == ROWAGG_SUM ||
+								 f->fAggFunction == ROWAGG_AVG ||
+								 f->fAggFunction == ROWAGG_MIN ||
+								 f->fAggFunction == ROWAGG_MAX ||
+								 f->fAggFunction == ROWAGG_STATS   ||
+								 f->fAggFunction == ROWAGG_BIT_AND ||
+								 f->fAggFunction == ROWAGG_BIT_OR  ||
+								 f->fAggFunction == ROWAGG_BIT_XOR ||
+								 f->fAggFunction == ROWAGG_CONSTANT)
+						{
+							funct.reset(
+								new RowAggFunctionCol(
+									f->fAggFunction,
+									f->fStatsFunction,
+									f->fInputColumnIndex,
+									f->fOutputColumnIndex,
+									f->fAuxColumnIndex));
+						}
 						functionSub2.push_back(funct);
 					}
 				}

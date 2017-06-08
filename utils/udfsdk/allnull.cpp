@@ -29,7 +29,7 @@ struct allnull_data
     uint64_t	totalNulls;
 };
 
-#define OUT_TYPE char
+#define OUT_TYPE int64_t
 mcsv1_UDAF::ReturnCode allnull::init(mcsv1Context* context,
 									 COL_TYPES& colTypes)
 {
@@ -38,10 +38,10 @@ mcsv1_UDAF::ReturnCode allnull::init(mcsv1Context* context,
 	{
 		// The error message will be prepended with
 		// "The storage engine for the table doesn't support "
-		context->setErrorMessage("allnull() with 0 atguments");
+		context->setErrorMessage("allnull() with 0 arguments");
 		return mcsv1_UDAF::ERROR;
 	}
-	context->setResultType(CalpontSystemCatalog::BIT);
+	context->setResultType(CalpontSystemCatalog::TINYINT);
 
 	return mcsv1_UDAF::SUCCESS;
 }
@@ -75,15 +75,6 @@ mcsv1_UDAF::ReturnCode allnull::nextValue(mcsv1Context* context,
 	return mcsv1_UDAF::SUCCESS;
 }
 
-mcsv1_UDAF::ReturnCode allnull::evaluate(mcsv1Context* context, boost::any& valOut, bool& isNull)
-{
-	OUT_TYPE allNull;
-	struct allnull_data* data = (struct allnull_data*)context->getUserData();
-	allNull = data->totalQuantity > 0 && data->totalNulls == data->totalQuantity;
-	valOut = allNull;
-	return mcsv1_UDAF::SUCCESS;
-}
-
 mcsv1_UDAF::ReturnCode allnull::subEvaluate(mcsv1Context* context, const void* valIn)
 {
 	struct allnull_data* outData = (struct allnull_data*)context->getUserData();
@@ -93,21 +84,13 @@ mcsv1_UDAF::ReturnCode allnull::subEvaluate(mcsv1Context* context, const void* v
 	return mcsv1_UDAF::SUCCESS;
 }
 
-mcsv1_UDAF::ReturnCode allnull::superEvaluate(mcsv1Context* context, 
-											  std::vector<boost::any>& valsIn,
-											  boost::any& valOut, bool& isNull)
+mcsv1_UDAF::ReturnCode allnull::evaluate(mcsv1Context* context, boost::any& valOut)
 {
-	OUT_TYPE allNull = 1;
-	for (size_t i = 0; i < valsIn.size(); ++i)
-	{
-		if (boost::any_cast<int>(&valsIn[i]) == 0)
-		{
-			allNull = 0;
-		}
-	}
+	OUT_TYPE allNull;
+	struct allnull_data* data = (struct allnull_data*)context->getUserData();
+	allNull = data->totalQuantity > 0 && data->totalNulls == data->totalQuantity;
 	valOut = allNull;
 	return mcsv1_UDAF::SUCCESS;
 }
-
 
 

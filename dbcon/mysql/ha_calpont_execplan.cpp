@@ -3929,7 +3929,6 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 				gwi.parseErrorText += ": No Columnstore UDAF found with that name";
 				return NULL;
 			}
-			udafc->setFunction(funcIter->second);
 			context.setResultType(udafc->resultType().colDataType);
 			context.setColWidth(udafc->resultType().colWidth);
 			context.setResultDecimalCharacteristics(udafc->resultType().scale, 
@@ -3938,12 +3937,11 @@ ReturnedColumn* buildAggregateColumn(Item* item, gp_walk_info& gwi)
 			COL_TYPES colTypes;
 			execplan::CalpontSelectExecutionPlan::ColumnMap::iterator cmIter;
 
-			for (cmIter = gwi.columnMap.begin(); cmIter != gwi.columnMap.end(); ++cmIter)
-			{
-				colTypes.insert(make_pair(cmIter->first, cmIter->second->resultType().colDataType));
-			}
+			// Build the column type vector. For now, there is only one
+			colTypes.push_back(make_pair(udafc->functionParms()->alias(), udafc->functionParms()->resultType().colDataType));
 
-			if (udafc->getFunction()->init(&context, colTypes) == mcsv1_UDAF::ERROR)
+			// Call the user supplied init()
+			if (funcIter->second->init(&context, colTypes) == mcsv1_UDAF::ERROR)
 			{
 				gwi.fatalParseError = true;
 				gwi.parseErrorText = udafc->getContext().getErrorMessage();

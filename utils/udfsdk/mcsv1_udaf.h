@@ -114,24 +114,25 @@ static uint64_t	UDAF_ORDER_ALLOWED  __attribute__ ((unused))       = 1 << 3; // 
 static uint64_t	UDAF_WINDOWFRAME_REQUIRED __attribute__ ((unused)) = 1 << 4; // If used as UDAnF, a WINDOW FRAME is required
 static uint64_t	UDAF_WINDOWFRAME_ALLOWED __attribute__ ((unused))  = 1 << 5; // If used as UDAnF, a WINDOW FRAME is optional
 static uint64_t	UDAF_MAYBE_NULL     __attribute__ ((unused))       = 1 << 6; // If UDA(n)F might return NULL.
-static uint64_t	UDAF_MAYBE_DISTRIBUTED __attribute__ ((unused))    = 1 << 7; // If UDAF is designed to be distributed.
 
-// Flags set by the framework to define the context of the call
+// Flags set by the framework to define the context of the call.
+// User code shouldn't use these directly
 // used in context->fContextFlags
 static uint64_t	CONTEXT_IS_ANALYTIC __attribute__ ((unused))          = 1;      // If called using OVER
 static uint64_t	CONTEXT_UNBOUNDED_PRECEEDING __attribute__ ((unused)) = 1 << 1; // Called using UNBOUNDED_PRECEEDING
 static uint64_t	CONTEXT_HAS_CURRENT_ROW __attribute__ ((unused))      = 1 << 2; // The current window contains the current row.
 static uint64_t	CONTEXT_IS_RANGE_BASED __attribute__ ((unused))       = 1 << 3; // The Window is RANGE based.
+static uint64_t	CONTEXT_IS_PM __attribute__ ((unused))                = 1 << 4; // The call was made by the PM
 
 // Flags that describe the contents of a specific input parameter
 // These will be set in context->dataFlags for each method call by the framework.
-// The data referred to is different depending on the method called.
+// User code shouldn't use these directly
 static uint64_t	PARAM_IS_NULL     __attribute__ ((unused)) = 1;
 static uint64_t	PARAM_IS_CONSTANT __attribute__ ((unused)) = 1 << 1;
 
 // shorthand for the list of columns in the call sent to init()
 // first is the actual column name and second is the data type in Columnstore.
-typedef std::multimap<std::string, CalpontSystemCatalog::ColDataType> COL_TYPES;
+typedef std::vector<std::pair<std::string, CalpontSystemCatalog::ColDataType> >COL_TYPES;
 
 // This is the context class that is passed to all API callbacks
 // The framework potentially sets data here for each invocation of 
@@ -148,8 +149,10 @@ class mcsv1Context
 public:
 	EXPORT mcsv1Context();
 	EXPORT mcsv1Context(mcsv1Context& rhs);
-	// The destructor is not virtual. mcsv1Context should never be subclassed
-	EXPORT ~mcsv1Context();
+	// The destructor is virtual only in case a version 2 is made derived from v1
+	// to promote backward compatibility.
+	// mcsv1Context should never be subclassed by UDA(n)F developers
+	EXPORT virtual ~mcsv1Context();
 
 	// Set an error message if something goes wrong
 	EXPORT void setErrorMessage(std::string errmsg);
@@ -183,12 +186,23 @@ public:
 	EXPORT bool isWindowHasCurrentRow();
 	EXPORT bool isRangeBased();
 
+	// Determine if the call is made by the UM
+	// This could be because the UDA(n)F is not being distributed
+	// Or it could be during setup or during consolodation of PM values.
+	// valid in all calls
+	EXPORT bool isUM();
+
+	// Determine if the call is made by the PM
+	// This will be during partial aggregation performed on the PM
+	// valid in all calls
+	EXPORT bool isPM();
+
 	// Parameter refinement description accessors
-	// valid in nextValue, dropValue, evaluateCumulative and superEvaluate
+	// valid in nextValue, dropValue and evaluateCumulative
 	size_t getParameterCount();
 
 	// Determine if an input parameter is NULL
-	// valid in nextValue, dropValue, evaluateCumulative and superEvaluate
+	// valid in nextValue, dropValue and evaluateCumulative
 	EXPORT bool isParamNull(int paramIdx);
 
 	// If a parameter is a constant, the UDA(n)F could presumably optimize its workings.
@@ -279,7 +293,7 @@ public:
 private:
 
 	uint64_t fRunFlags;       // Set by the user to define the type of UDA(n)F
-	uint64_t fContextFlags;   // Set by the framework to define this specific call.
+	uint64_t fContextFlags;  // Set by the framework to define this specific call.
 	uint32_t fUserDataSize;
 	uint8_t* fUserData;
 	CalpontSystemCatalog::ColDataType fResultType;
@@ -287,7 +301,7 @@ private:
 	int32_t  fResultDecimals;  // For Decimals, the number of digits to the right of the decimal
 	int32_t  fResultPrecision; // The max number of digits allowed in the decimal value
 	std::string errorMsg;
-	std::vector<uint32_t> dataFlags;  // one entry for each parameter
+	std::vector<uint32_t>* dataFlags; // one entry for each parameter
 	bool*    bInterrupted;            // Gets set to true by the Framework if something happens
 	uint64_t fRowsInPartition;        // Only valid in reset()
 	WF_FRAME fStartFrame;     // Is set to default to start, then modified by the actual frame in the call
@@ -301,12 +315,14 @@ public:
 	EXPORT void serialize(messageqcpp::ByteStream& b) const;
 	EXPORT void unserialize(messageqcpp::ByteStream& b);
 	EXPORT void createUserData();
+	EXPORT void setUserData(uint8_t* data);
 	EXPORT void freeUserData();
 	EXPORT void setName(std::string name);
 	EXPORT void setContextFlags(uint64_t flags);
 	EXPORT uint64_t getContextFlags();
 	EXPORT uint32_t getUserDataSize();
 	EXPORT std::vector<uint32_t>& getDataFlags();
+	EXPORT void setDataFlags(std::vector<uint32_t>* flags);
 	EXPORT void setInterrupted(bool interrupted);
 	EXPORT void setInterrupted(bool* interrupted);
 };
@@ -354,7 +370,9 @@ public:
 	mcsv1_UDAF(){};
 	virtual ~mcsv1_UDAF(){};
 
-	/**
+	/** 
+	 * init() 
+	 *  
 	 * Mandatory. Implement this to initialize flags and instance 
 	 * data. Called once per SQL statement. You can do any sanity 
 	 * checks here. 
@@ -373,25 +391,34 @@ public:
 	virtual ReturnCode init(mcsv1Context* context,
 							COL_TYPES& colTypes) = 0;
 
-	/**
-	 * Mandatory. Completes the UDA(n)F. 
-	 * Called once per SQL statement. Do not free any memory 
-	 * allocated by context->allocUserData(). The SDK Framework owns 
-	 * that memory and will handle that. 
+	/** 
+	 * finish() 
+	 *  
+	 * Mandatory. Completes the UDA(n)F. Called once per SQL 
+	 * statement. Do not free any memory allocated by 
+	 * context->allocUserData(). The SDK Framework owns that memory 
+	 * and will handle that. Often, there is nothing to do here. 
 	 */
 	virtual ReturnCode finish(mcsv1Context* context) = 0;
 
-	/**
+	/** 
+	 * reset() 
+	 *  
 	 * Mandatory. Reset the UDA(n)F for a new group, partition or, 
 	 * in some cases, new Window Frame. Do not free any memory 
 	 * allocated by context->allocUserData(). The SDK Framework owns 
 	 * that memory and will handle that. Use this opportunity to 
 	 * reset any variables in context->getUserData() needed for the 
-	 * next aggregation. 
+	 * next aggregation. May be called multiple times if running in 
+	 * a ditributed fashion. 
+	 *  
+	 * Use this opportunity to initialize the userData.
 	 */
 	virtual ReturnCode reset(mcsv1Context* context) = 0;
 
-	/**
+	/** 
+	 * nextValue() 
+	 *  
 	 * Mandatory. Handle a single row. 
 	 *  
 	 * colsIn - A vector of data structure describing the input 
@@ -410,7 +437,36 @@ public:
 	virtual ReturnCode nextValue(mcsv1Context* context, 
 								 std::vector<ColumnDatum>& valsIn) = 0;
 
-	/**
+	 /** 
+	  * subEvaluate() 
+	  *  
+	  * Mandatory -- Called if the UDAF is running in a distributed 
+	  * fashion. Columnstore tries to run all aggregate functions 
+	  * distributed, depending on context. 
+	  *  
+	  * Perform an aggregation on rows partially aggregated by 
+	  * nextValue. Columnstore calls nextValue for each row on a 
+	  * given PM for a group (GROUP BY). subEvaluate is called on the
+	  * UM to consolodate those values into a single instance of 
+	  * userData. Keep your aggregated totals in context's userData. 
+	  * The first time this is called for a group, reset() would have 
+	  * been called with this version of userData. 
+	  *  
+	  * Called for every partial data set in each group in GROUP BY.
+	  *  
+	  * When subEvaluate has been called for all subAggregated data 
+	  * sets, Evaluate will be called with the same context as here.
+	  *  
+	  * valIn (In) - This is a pointer to a memory block of the size 
+	  * set in allocUserData. It will contain the value of userData 
+	  * as seen in the last call to NextValue for a given PM.
+	  *  
+	  */
+	 virtual ReturnCode subEvaluate(mcsv1Context* context, const void* valIn) = 0;
+
+	/** 
+	 * evaluate() 
+	 *  
 	 * Mandatory. Get the aggregated value.
 	 *  
 	 * Called for every new group if UDAF GROUP BY, UDAnF partition 
@@ -420,70 +476,18 @@ public:
 	 * to be the same as that set in the init() function; 
 	 *  
 	 * If the UDAF is running in a distributed fashion, evaluate is 
-	 * not called. 
+	 * called after a series of subEvaluate calls. 
 	 *  
 	 * valOut (out) - Set the aggregated value here. The datatype is
 	 * assumed to be the same as that set in the init() function; 
 	 *  
-	 * isNull (out) set to true if the result is NULL. valOut will 
-	 * be ignored. 
+	 * To return a NULL value, don't assign to valOut.
 	 */
-	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut, bool& isNull) = 0;
+	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut) = 0;
 
 	 /** 
-	  * Optional -- If defined, the server may run the UDAF in a 
-	  * distributed fashion. Use setRunFlag(UDAF_MAYBE_DISTRIBUTED) 
-	  * to enable distributed UDAF. 
+	  * dropValue() 
 	  *  
-	  * Perform an agggregation on rows partially aggregated by 
-	  * nextValue. Columnstore calls nextValue for each row on a 
-	  * given PM for a group (GROUP BY). subEvaluateis called to 
-	  * consolodate those values into a single instance of userData. 
-	  * As usual, keep your aggregated totals in context. The first 
-	  * time this is called for a group, reset() would have been 
-	  * called with this version of userData. 
-	  *  
-	  * Called for every partial data set in each group in GROUP BY
-	  *  
-	  * When subEvaluate has been called for all subAggregated data 
-	  * sets, Evaluate will be called with the same context as here.
-	  *  
-	  * valIn (In) - This is a pointer to a memory block of the size 
-	  * set in allocUserData. It will contain the value of userData 
-	  * as seen in the last call to NextValue for a given PM.  Don't 
-	  * assume it will be in the same place in memory -- it won't be.
-	  *  
-	  */
-	 virtual ReturnCode subEvaluate(mcsv1Context* context, const void* valIn);
-
-	 /** 
-	  * Optional -- If defined, the server may run the UDAF in a 
-	  * distributed fashion. set UDAF_MAYBE_DISTRIBUTED in u
-	  *  
-	  * Get the final aggregated value from a set of sub aggregations 
-	  * performed on the PMs or multi-threaded aggregation on the UM.
-	  *  
-	  * Called for every new group if UDAF GROUP BY
-	  *  
-	  * If the UDAF is running in a distributed fashion, 
-	  * superEvaluate is called on the UM for each group. context is 
-	  * not shared between subEvaluate and superEvaluate. 
-	  *  
-	  * valsIn (in) - a vector of the return values of each 
-	  * subEvaluate for this GROUP 
-	  *  
-	  * valOut (out) - set this to the final aggregation value for 
-	  * the GROUP. The datatype is assumed to be the same as that set 
-	  * in the init() function; 
-	  *  
-	  * isNull (out) set to true if the result is NULL. valOut will 
-	  * be ignored. 
-	  */
-	virtual ReturnCode superEvaluate(mcsv1Context* context, 
-									 std::vector<boost::any>& valsIn,
-		                             boost::any& valOut, bool& isNull);
-
-	 /** 
 	  * Optional -- If defined, the server will call this instead of 
 	  * reset for UDAnF. 
 	  *  
@@ -507,7 +511,9 @@ public:
 	 virtual ReturnCode dropValue(mcsv1Context* context, 
 								  std::vector<boost::any>& valsDropped);
 
-	/**
+	/** 
+	 * evaluateCumulative() 
+	 *  
 	 * Optional - for UDAnF that have a Frame of UNBOUNDED PRECEDING 
 	 * to CURRENT ROW. 
 	 *  
@@ -523,12 +529,11 @@ public:
 	 * the row. The datatype is assumed to be the same as that set 
 	 * in the init() function; 
 	 *  
-	 * isNull (out) set to true if the result is NULL. valOut will 
-	 * be ignored. 
+	 * To return a NULL value, don't assign to valOut.
 	 */
 	virtual ReturnCode evaluateCumulative(mcsv1Context* context, 
 									std::vector<boost::any>& valsIn,
-		                            boost::any& valOut, bool& isNull);
+		                            boost::any& valOut);
 
 protected:
 
@@ -557,13 +562,29 @@ inline mcsv1Context::mcsv1Context() :
 }
 
 inline mcsv1Context::mcsv1Context(mcsv1Context& rhs) :
-    fUserData(NULL),
+    fContextFlags(0),
+	fUserData(NULL),
+	dataFlags(NULL),
 	bInterrupted(NULL)
 {
 	copy(rhs);
 }
 
-// The destructor is not virtual. mcsv1Context should never be subclassed
+inline mcsv1Context& mcsv1Context::copy(mcsv1Context& rhs)
+{
+	fRunFlags        = rhs.getRunFlags();
+	fResultType      = rhs.getResultType();
+	fColWidth        = rhs.getColWidth();
+	fUserDataSize    = rhs.getUserDataSize();
+	rhs.getResultDecimalCharacteristics(fResultDecimals, fResultPrecision);
+	fRowsInPartition = rhs.getRowsInPartition();
+	rhs.getStartFrame(fStartFrame, fStartConstant);
+	rhs.getEndFrame(fEndFrame, fEndConstant);
+	functionName = rhs.getName();
+	bInterrupted = rhs.bInterrupted;  // Multiple threads will use the same reference
+	return *this;
+}
+
 inline mcsv1Context::~mcsv1Context()
 {
 	if (fUserData) freeUserData();
@@ -644,19 +665,35 @@ inline bool mcsv1Context::isRangeBased()
 	return fContextFlags & CONTEXT_IS_RANGE_BASED;
 }
 
+inline bool mcsv1Context::isUM()
+{
+	return !(fContextFlags & CONTEXT_IS_PM);
+}
+
+inline bool mcsv1Context::isPM()
+{
+	return fContextFlags & CONTEXT_IS_PM;
+}
+
 inline size_t mcsv1Context::getParameterCount() 
 {
-	return dataFlags.size();
+	if (dataFlags)
+		return dataFlags->size();
+	return 0;
 }
 
 inline bool mcsv1Context::isParamNull(int paramIdx) 
 {
-	return dataFlags[paramIdx] & PARAM_IS_NULL;
+	if (dataFlags)
+		return (*dataFlags)[paramIdx] & PARAM_IS_NULL;
+	return false;
 }
 
 inline bool mcsv1Context::isParamConstant(int paramIdx) 
 {
-	return dataFlags[paramIdx] & PARAM_IS_CONSTANT;
+	if (dataFlags)
+		return (*dataFlags)[paramIdx] & PARAM_IS_CONSTANT;
+	return false;
 }
 
 inline CalpontSystemCatalog::ColDataType mcsv1Context::getResultType() 
@@ -724,6 +761,10 @@ inline void mcsv1Context::allocUserData(int bytes)
 
 inline uint8_t* mcsv1Context::getUserData() 
 {
+	if (!fUserData)
+	{
+		createUserData();
+	}
 	return fUserData;
 }
 
@@ -735,6 +776,15 @@ inline void mcsv1Context::createUserData()
 		freeUserData();
 	}
 	fUserData = (uint8_t*)malloc(fUserDataSize);
+}
+
+inline void mcsv1Context::setUserData(uint8_t* data)
+{
+	// This doesn't take into account that fUserData might be valid.
+	// It is the callers responsibility to deal with the old value.
+	// This function is usually used to restore a pointer after a temp
+	// value has been used.
+	fUserData = data;
 }
 
 inline bool mcsv1Context::setDefaultWindowFrame(WF_FRAME defaultStartFrame, 
@@ -782,14 +832,14 @@ inline void mcsv1Context::setName(std::string name)
 	functionName = name;
 }
 
-inline void mcsv1Context::setContextFlags(uint64_t flags)
-{
-	fContextFlags = flags;
-}
-
 inline uint64_t mcsv1Context::getContextFlags()
 {
 	return fContextFlags;
+}
+
+inline void mcsv1Context::setContextFlags(uint64_t flags)
+{
+	fContextFlags = flags;
 }
 
 inline uint32_t mcsv1Context::getUserDataSize()
@@ -799,19 +849,12 @@ inline uint32_t mcsv1Context::getUserDataSize()
 
 inline std::vector<uint32_t>& mcsv1Context::getDataFlags()
 {
-	return dataFlags;
+	return *dataFlags;
 }
 
-inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::subEvaluate(mcsv1Context* context, const void* valIn)
+inline void mcsv1Context::setDataFlags(std::vector<uint32_t>* flags)
 {
-	return NOT_IMPLEMENTED;
-}
-
-inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::superEvaluate(mcsv1Context* context, 
-														std::vector<boost::any>& valsIn,
-														boost::any& valOut, bool& isNull)
-{
-	return NOT_IMPLEMENTED;
+	dataFlags = flags;
 }
 
 inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::dropValue(mcsv1Context* context, 
@@ -822,7 +865,7 @@ inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::dropValue(mcsv1Context* context,
 
 inline mcsv1_UDAF::ReturnCode mcsv1_UDAF::evaluateCumulative(mcsv1Context* context, 
 															 std::vector<boost::any>& valsIn,
-															 boost::any& valOut, bool& isNull)
+															 boost::any& valOut)
 {
 	return NOT_IMPLEMENTED;
 }

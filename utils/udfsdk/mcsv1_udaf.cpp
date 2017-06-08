@@ -49,26 +49,6 @@ UDAF_MAP& UDAFMap::getMap()
 	return fm;
 }
 
-mcsv1Context& mcsv1Context::copy(mcsv1Context& rhs)
-{
-	fRunFlags        = rhs.getRunFlags();
-	fContextFlags    = rhs.getContextFlags();
-	allocUserData(rhs.getUserDataSize());
-	fResultType      = rhs.getResultType();
-	fColWidth        = rhs.getColWidth();
-	rhs.getResultDecimalCharacteristics(fResultDecimals, fResultPrecision);
-	fRowsInPartition = rhs.getRowsInPartition();
-	rhs.getStartFrame(fStartFrame, fStartConstant);
-	rhs.getEndFrame(fEndFrame, fEndConstant);
-	createUserData();
-	if (rhs.getUserData())
-	{
-		memcpy(fUserData, rhs.getUserData(), fUserDataSize);
-	}
-	functionName = rhs.getName();
-	return *this;
-}
-
 int32_t mcsv1Context::getColWidth()
 {
 	if (fColWidth > 0)
@@ -156,35 +136,18 @@ const std::string mcsv1Context::toString() const
 
 void mcsv1Context::serialize(messageqcpp::ByteStream& b) const
 {
-	b.needAtLeast(sizeof(mcsv1Context) + fUserDataSize);
+	b.needAtLeast(sizeof(mcsv1Context));
 	b << (ObjectReader::id_t) ObjectReader::MCSV1_CONTEXT;
 	b << functionName;
 	b << fRunFlags;
-	b << fContextFlags;
+	// Dont send context flags, These are set for each call
 	b << fUserDataSize;
-#if 0
-	// NOTE: We may choose to not stream user data. It may not be conducive
-	// to distributed processing.
-	if (fUserData && fUserDataSize > 0)
-	{
-		b << (int8_t)1;
-		b.append(fUserData, fUserDataSize);
-	}
-	else
-	{
-		b << (int8_t)0;
-	}
-#endif
 	b << (uint32_t)fResultType;
 	b << fResultDecimals;
 	b << fResultPrecision;
 	b << errorMsg;
-	b << dataFlags.size();
-	for (uint32_t i = 0; i < dataFlags.size(); ++i)
-	{
-		b << dataFlags[i];
-	}
-	// bInterrupted
+	// Don't send dataflags. These are set for each call
+	// bInterrupted is set internally.
 	b << fRowsInPartition;
 	b << (uint32_t)fStartFrame;
 	b << (uint32_t)fEndFrame;
@@ -197,39 +160,14 @@ void mcsv1Context::unserialize(messageqcpp::ByteStream& b)
 	ObjectReader::checkType(b, ObjectReader::MCSV1_CONTEXT);
 	b >> functionName;
 	b >> fRunFlags;
-	b >> fContextFlags;
 	b >> fUserDataSize;
 	createUserData();
-#if 0
-	int8_t hasUserData;
-	b >> hasUserData;
-	if (fUserDataSize > 0)
-	{
-		if (hasUserData)
-		{
-			createUserData();
-			memcpy(fUserData, b.buf(), fUserDataSize);
-			b.advance(fUserDataSize);
-		}
-	}
-	else
-	{
-		fUserData = NULL;
-	}
-#endif
 	uint32_t iResultType;
 	b >> iResultType;
 	fResultType = (CalpontSystemCatalog::ColDataType)iResultType;
 	b >> fResultDecimals;
 	b >> fResultPrecision;
 	b >> errorMsg;
-	size_t dataFlagsSize;
-	b >> dataFlagsSize;
-	for (size_t i = 0; i < dataFlagsSize; ++i)
-	{
-		b >> dataFlags[i];
-	}
-	// bInterrupted
 	b >> fRowsInPartition;
 	uint32_t frame;
 	b >> frame;
