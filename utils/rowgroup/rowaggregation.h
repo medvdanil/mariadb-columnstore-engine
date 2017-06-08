@@ -65,6 +65,7 @@ struct RowPosition
 {
 	uint64_t group:48;
 	uint64_t row:16;
+
 	static const uint64_t MSB = 0x800000000000ULL;   //48th bit is set
 	inline RowPosition(uint64_t g, uint64_t r) : group(g), row(r) { }
 	inline RowPosition() { }
@@ -204,6 +205,7 @@ struct RowUDAFFunctionCol : public RowAggFunctionCol
 	{
 		fUDAFContext.setInterrupted(&bInterrupted);
 	}
+
 	RowUDAFFunctionCol(int32_t inputColIndex, 
 					   int32_t outputColIndex, int32_t auxColIndex = -1) :
 			RowAggFunctionCol(ROWAGG_UDAF, ROWAGG_FUNCT_UNDEFINE,
@@ -215,9 +217,9 @@ struct RowUDAFFunctionCol : public RowAggFunctionCol
 	virtual void serialize(messageqcpp::ByteStream& bs) const;
 	virtual void deserialize(messageqcpp::ByteStream& bs);
 
-	// The UDAF context
-	mcsv1sdk::mcsv1Context fUDAFContext;
-	bool bInterrupted;
+	mcsv1sdk::mcsv1Context fUDAFContext;  // The UDAF context
+	mcsv1sdk::mcsv1_UDAF*  pUDAFfunction; // So we don't have to look it up every time.
+	bool bInterrupted;                    // Shared by all the threads
 };
 
 inline void RowAggFunctionCol::serialize(messageqcpp::ByteStream& bs) const
@@ -242,13 +244,32 @@ inline void RowUDAFFunctionCol::serialize(messageqcpp::ByteStream& bs) const
 
 inline void RowUDAFFunctionCol::deserialize(messageqcpp::ByteStream& bs)
 { 
+	// This deserialize is called when the function gets to PrimProc.
+	// reset is called because we're starting a new sub-evaluate cycle.
 	RowAggFunctionCol::deserialize(bs);
 	fUDAFContext.unserialize(bs);
+	fUDAFContext.setInterrupted(&bInterrupted);
+	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(fUDAFContext.getName());
+	if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+	{
+		std::ostringstream errmsg;
+		errmsg << "RowAggregation (3) A UDAF function, " << fUDAFContext.getName() << 
+			", is called but there's no entry in UDAF_MAP";
+		throw std::logic_error(errmsg.str());
+	}
+	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+	rc = funcIter->second->reset(&fUDAFContext);
+	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+	{
+		bInterrupted = true;
+		throw logging::QueryDataExcept(fUDAFContext.getErrorMessage(), logging::aggregateFuncErr);
+	}
 }
 
 struct ConstantAggData
 {
 	std::string        fConstValue;
+	std::string        fUDAFName;     // If a UDAF is called with constant.
 	RowAggFunctionType fOp;
 	bool               fIsNull;
 
@@ -257,6 +278,10 @@ struct ConstantAggData
 
 	ConstantAggData(const std::string& v, RowAggFunctionType f, bool n) :
 		fConstValue(v), fOp(f), fIsNull(n)
+	{}
+
+	ConstantAggData(const std::string& v, const std::string u, RowAggFunctionType f, bool n) :
+		fConstValue(v), fUDAFName(u), fOp(f), fIsNull(n)
 	{}
 };
 
@@ -530,6 +555,8 @@ class RowAggregation : public messageqcpp::Serializeable
 		virtual bool newRowGroup();
 		virtual void clearAggMap() { if (fAggMapPtr) fAggMapPtr->clear(); }
 
+		void resetUDAF(uint64_t funcColID);
+
 		inline bool isNull(const RowGroup* pRowGroup, const Row& row, int64_t col);
 		inline void makeAggFieldsNull(Row& row);
 		inline void copyNullRow(Row& row) {	copyRow(fNullRow, &row); }
@@ -590,7 +617,6 @@ class RowAggregation : public messageqcpp::Serializeable
 		friend class AggHasher;
 		friend class AggComparator;
 };
-
 
 //------------------------------------------------------------------------------
 /** @brief derived Class that aggregates multi-rowgroups on UM
@@ -681,6 +707,9 @@ class RowAggregationUM : public RowAggregation
 
 		// calculate the statistics function all rows received. UM only function.
 		void calculateStatisticsFunctions();
+
+		// Sets the value from valOut into column colOut, performing any conversions.
+		void SetUDAFValue(boost::any valOut, int64_t colOut);
 
 		// calculate the UDAF function all rows received. UM only function.
 		void calculateUDAFColumns();

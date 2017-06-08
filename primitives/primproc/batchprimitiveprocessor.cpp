@@ -371,8 +371,32 @@ void BatchPrimitiveProcessor::initBPP(ByteStream &bs)
 		{
 			bs >> fAggregateRG;
 			fAggregator.reset(new RowAggregation);
-// 			cout << "Made an aggregator\n";
 			bs >> *(fAggregator.get());
+			// If there's UDAF involved, set up for PM processing
+			for (uint64_t i = 0; i < fAggregator->getAggFunctions().size(); i++)
+			{
+				RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fAggregator->getAggFunctions()[i].get());
+				if (rowUDAF)
+				{
+					// Get the UDAF class pointer and store in the row definition object.
+					mcsv1sdk::mcsv1Context& rgContext(rowUDAF->fUDAFContext);
+
+					mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rgContext.getName());
+					if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+					{
+						std::ostringstream errmsg;
+						errmsg << "RowAggregation (8) A UDAF function, " << rgContext.getName() << 
+							", is called but there's no entry in UDAF_MAP";
+						throw logic_error(errmsg.str());
+					}
+					rowUDAF->pUDAFfunction = funcIter->second;   // Save for others
+					// On the PM, the aux column is not sent, but rather is output col + 1.
+					rowUDAF->fAuxColumnIndex = rowUDAF->fOutputColumnIndex + 1;
+					// Set the PM flag in case the UDAF cares.
+					rowUDAF->fUDAFContext.setContextFlags(rowUDAF->fUDAFContext.getContextFlags() 
+														  | mcsv1sdk::CONTEXT_IS_PM);
+				}
+			}
 		}
 	}
 

@@ -58,8 +58,6 @@ public:
 
 	UDAFColumn(const UDAFColumn& rhs, const uint32_t sessionID=0);
 
-	UDAFColumn(const std::string& functionName, ReturnedColumn* parm, const uint32_t sessionID=0);
-
 	/**
 	 * Destructors
 	 */
@@ -80,8 +78,6 @@ public:
 	 * Accessors and Mutators
 	 */
 	mcsv1Context& getContext() {return context;}
-	mcsv1_UDAF*   getFunction() {return pUDAFfunction;}
-	void          setFunction(mcsv1_UDAF* udafFunction) {pUDAFfunction = udafFunction;}
 
 	/**
 	 * Serialize interface
@@ -123,7 +119,6 @@ public:
 
 private:
 	mcsv1Context context;
-	mcsv1_UDAF*  pUDAFfunction;
 };
 
 /**

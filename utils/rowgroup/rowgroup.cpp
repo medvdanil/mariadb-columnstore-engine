@@ -613,9 +613,10 @@ bool Row::isNullValue(uint32_t colIndex) const
 			break;
 		default: {
 			ostringstream os;
-			os << "Row::isNullValue(): got bad column type (" << types[colIndex] <<
-				").  Width=" << getColumnWidth(colIndex) << endl;
-			os << toString() << endl;
+			os << "Row::isNullValue(): got bad column type (";
+			os << types[colIndex];
+			os << ").  Width=";
+			os << getColumnWidth(colIndex) << endl;
 			throw logic_error(os.str());
 		}
 	}
@@ -874,7 +875,9 @@ RowGroup & RowGroup::operator=(const RowGroup &r)
 	return *this;
 }
 
-RowGroup::~RowGroup() { }
+RowGroup::~RowGroup() 
+{ 
+}
 
 void RowGroup::resetRowGroup(uint64_t rid)
 {

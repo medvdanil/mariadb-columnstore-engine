@@ -28,7 +28,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <limits>
-
+#include <typeinfo>
 #include "joblisttypes.h"
 #include "resourcemanager.h"
 #include "groupconcat.h"
@@ -720,6 +720,30 @@ void RowAggregation::setJoinRowGroups(vector<RowGroup> *pSmallSideRG, RowGroup *
 		(*fSmallSideRGs)[i].initRow(&rowSmalls[i]);
 }
 
+//------------------------------------------------------------------------------
+// For UDAF, we need to sometimes start a new context.
+//------------------------------------------------------------------------------
+void RowAggregation::resetUDAF(uint64_t funcColID)
+{
+	// We should only get here with a new group, so insertion should be the norm.
+
+	// Get the UDAF class pointer and store in the row definition object.
+	RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[funcColID].get());
+	mcsv1sdk::mcsv1Context& rgContext(rowUDAF->fUDAFContext);
+
+	// Call the user reset for the group userData. 
+	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+
+	rc = rowUDAF->pUDAFfunction->reset(&rgContext);
+	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+	{
+		rowUDAF->bInterrupted = true;
+		throw logging::QueryDataExcept(rgContext.getErrorMessage(), logging::aggregateFuncErr);
+	}
+	fRow.setVarBinaryField(rgContext.getUserData(), 
+						   rgContext.getUserDataSize(), 
+						   rowUDAF->fAuxColumnIndex);
+}
 
 //------------------------------------------------------------------------------
 // Initilalize the data members to meaningful values, setup the hashmap.
@@ -797,27 +821,8 @@ void RowAggregation::aggReset()
 		delete fAggMapPtr;
 		fAggMapPtr = new RowAggMap_t(10, *fHasher, *fEq, *fAlloc);
 	}
-
 	fResultDataVec.clear();
 	fResultDataVec.push_back(fRowGroupOut->getRGData());
-
-	// Call the reset for any UDAF in the query
-	for (size_t i = 0; i < fFunctionCols.size(); ++i)
-	{
-		RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
-		if (rowUDAF)
-		{
-			mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-			if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
-			{
-				std::ostringstream errmsg;
-				errmsg << "RowAggregation (1) A UDAF function, " << rowUDAF->fUDAFContext.getName() << 
-					", is called but there's no entry in UDAF_MAP";
-				throw logic_error(errmsg.str());
-			}
-			funcIter->second->reset(&rowUDAF->fUDAFContext);
-		}
-	}
 }
 
 
@@ -833,21 +838,6 @@ void RowAggregationUM::aggReset()
 		fExtHash.reset(new ExternalKeyHasher(fKeyRG, fKeyStore.get(), fKeyRG.getColumnCount(), &tmpRow));
 		fExtKeyMapAlloc.reset(new utils::STLPoolAllocator<pair<RowPosition, RowPosition> >());
 		fExtKeyMap.reset(new ExtKeyMap_t(10, *fExtHash, *fExtEq, *fExtKeyMapAlloc));
-	}
-
-	// Call the reset for any UDAF in the query
-	for (size_t i = 0; i < fFunctionCols.size(); ++i)
-	{
-		RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
-		if (rowUDAF)
-		{
-			mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-			if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
-			{
-				throw logic_error("(2)A UDAF function is called but there's no entry in UDAF_MAP");
-			}
-			funcIter->second->reset(&rowUDAF->fUDAFContext);
-		}
 	}
 }
 
@@ -874,6 +864,15 @@ void RowAggregationUM::aggregateRowWithRemap(Row& row)
 		initMapData(row);     //seems heavy-handed
 		attachGroupConcatAg();
 		inserted.first->second = RowPosition(fResultDataVec.size()-1, fRowGroupOut->getRowCount()-1);
+
+		// If there's UDAF involved, reset the user data.
+		for (uint64_t i = 0; i < fFunctionCols.size(); i++)
+		{
+			if (fFunctionCols[i]->fAggFunction == ROWAGG_UDAF)
+			{
+				resetUDAF(i);
+			}
+		}
 
 		// replace the key value with an equivalent copy, yes this is OK
 		const_cast<RowPosition &>((inserted.first->first)) = pos;
@@ -925,6 +924,16 @@ void RowAggregation::aggregateRow(Row& row)
 			// replace the key value with an equivalent copy, yes this is OK
 			const_cast<RowPosition &>(*(inserted.first)) =
 				RowPosition(fResultDataVec.size() - 1, fRowGroupOut->getRowCount() - 1);
+
+			// If there's UDAF involved, reset the user data.
+			for (uint64_t i = 0; i < fFunctionCols.size(); i++)
+			{
+				if (fFunctionCols[i]->fAggFunction == ROWAGG_UDAF)
+				{
+					resetUDAF(i);
+				}
+			}
+
 		}
 		else {
 			//fRow.setData(*(inserted.first));
@@ -1097,6 +1106,8 @@ void RowAggregation::makeAggFieldsNull(Row& row)
 			case execplan::CalpontSystemCatalog::CHAR:
 			case execplan::CalpontSystemCatalog::VARCHAR:
             case execplan::CalpontSystemCatalog::TEXT:
+			case execplan::CalpontSystemCatalog::VARBINARY:
+			case execplan::CalpontSystemCatalog::BLOB:
 			{
 				int colWidth = fRowGroupOut->getColumnWidth(colOut);
 				if (colWidth <= 8)
@@ -1791,8 +1802,16 @@ void RowAggregation::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int
 	execplan::CalpontSystemCatalog::ColDataType colDataType = fRowGroupIn.getColTypes()[colIn];
 	std::vector<uint32_t> dataFlags;
 
+	// Get the context for this rowGroup. Make a copy so we're thread safe.
+	mcsv1sdk::mcsv1Context rgContext(rowUDAF->fUDAFContext);
+
+	// Turn on NULL flags
+	std::vector<uint32_t> flags;
+	uint32_t flag = 0;
 	if (isNull(&fRowGroupIn, rowIn, colIn) == true)
-		rowUDAF->fUDAFContext.getDataFlags()[0] &= mcsv1sdk::PARAM_IS_NULL;
+		flag |= mcsv1sdk::PARAM_IS_NULL;
+	flags.push_back(flag);
+	rgContext.setDataFlags(&flags);
 
 	mcsv1sdk::ColumnDatum datum;
 
@@ -1856,7 +1875,7 @@ void RowAggregation::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int
 		default:
 		{
 			std::ostringstream errmsg;
-			errmsg << "RowAggregation " << rowUDAF->fUDAFContext.getName() << 
+			errmsg << "RowAggregation " << rgContext.getName() << 
 				": No logic for data type: " << colDataType;
 			throw logging::QueryDataExcept(errmsg.str(), logging::aggregateFuncErr);
 			break;
@@ -1864,23 +1883,25 @@ void RowAggregation::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int
 	}
 	valsIn.push_back(datum);
 
-	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
+	// The intermediate values are stored in colAux. Retrieve them, modify
+	// and put back. Rather than copying the data in and out, save the old
+	// pointer and point directly to the aux data
+	uint32_t userDataSize;
+	const uint8_t* userData = fRow.getVarBinaryField(userDataSize, colAux);
+	rgContext.setUserData(const_cast<uint8_t*>(userData));
+	if (!userDataSize || userDataSize != rgContext.getUserDataSize())
 	{
-		throw logic_error("(4)A UDAF function is called but there's no entry in UDAF_MAP");
+		// No user data? Guess we got no answer. Default is NULL
+		return;
 	}
 	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
-	rc = funcIter->second->nextValue(&rowUDAF->fUDAFContext, valsIn);
+	rc = rowUDAF->pUDAFfunction->nextValue(&rgContext, valsIn);
+	rgContext.setUserData(NULL);
 	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
 	{
-		throw logging::QueryDataExcept(rowUDAF->fUDAFContext.getErrorMessage(), logging::aggregateFuncErr);
 		rowUDAF->bInterrupted = true;
+		throw logging::QueryDataExcept(rgContext.getErrorMessage(), logging::aggregateFuncErr);
 	}
-	// We store a copy of the user data in the aux field to be fully aggregated later.
-	// It would be nice to store a pointer instead, to save on the copy if we can figure out how.
-	fRow.setVarBinaryField(rowUDAF->fUDAFContext.getUserData(), 
-						   rowUDAF->fUDAFContext.getUserDataSize(), 
-						   colAux);
 }
 
 //------------------------------------------------------------------------------
@@ -1933,7 +1954,6 @@ void RowAggregation::loadEmptySet(messageqcpp::ByteStream& bs)
 	bs << (uint32_t) 1;
 	fEmptyRowGroup.serializeRGData(bs);
 }
-
 
 //------------------------------------------------------------------------------
 // Row Aggregation constructor used on UM
@@ -2317,113 +2337,257 @@ void RowAggregationUM::calculateAvgColumns()
 	}
 }
 
-
-//------------------------------------------------------------------------------
-// After all PM rowgroups received, calculate the final value.
-//------------------------------------------------------------------------------
-void RowAggregationUM::calculateUDAFColumns()
+// Sets the value from valOut into column colOut, performing any conversions.
+void RowAggregationUM::SetUDAFValue(boost::any valOut, int64_t colOut)
 {
-#if 0
-	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
-	{
-		throw logic_error("(9) A UDAF function is called but there's no entry in UDAF_MAP");
-	}
-	boost::any valOut;
-	bool bNull = false;
-	funcIter->second->evaluate(&rowUDAF->fUDAFContext, valOut, bNull);
+	static const type_info& charTypeId = typeid(char);
+	static const type_info& scharTypeId = typeid(signed char);
+	static const type_info& shortTypeId = typeid(short);
+	static const type_info& intTypeId = typeid(int);
+	static const type_info& longTypeId = typeid(long);
+	static const type_info& llTypeId = typeid(long long);
+	static const type_info& ucharTypeId = typeid(unsigned char);
+	static const type_info& ushortTypeId = typeid(unsigned short);
+	static const type_info& uintTypeId = typeid(unsigned int);
+	static const type_info& ulongTypeId = typeid(unsigned long);
+	static const type_info& ullTypeId = typeid(unsigned long long);
+	static const type_info& floatTypeId = typeid(float);
+	static const type_info& doubleTypeId = typeid(double);
+	static const type_info& strTypeId = typeid(std::string);
 
-	// Set the returned value into the output row
-	execplan::CalpontSystemCatalog::ColDataType colDataType = fRowGroupIn.getColTypes()[colIn];
+	execplan::CalpontSystemCatalog::ColDataType colDataType = fRowGroupOut->getColTypes()[colOut];
+	if (valOut.empty())
+	{
+		// Fields are initialized to NULL, which is what we want for empty;
+		return;
+	}
+
+	// This may seem a bit convoluted. Users shouldn't return a type
+	// that they didn't set in mcsv1_UDAF::init(), but this
+	// handles whatever return type is given and castes
+	// it to whatever they said to return.
+	int64_t intOut = 0;
+	uint64_t uintOut = 0;
+	float floatOut = 0.0;
+	double doubleOut = 0.0;
+	ostringstream oss;
+	std::string strOut;
+	const type_info& valOutType = valOut.type();
+	if (valOutType == charTypeId)
+	{
+		uintOut = intOut = boost::any_cast<char>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == scharTypeId)
+	{
+		uintOut = intOut = boost::any_cast<signed char>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == shortTypeId)
+	{
+		uintOut = intOut = boost::any_cast<short>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == intTypeId)
+	{
+		uintOut = intOut = boost::any_cast<int>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == longTypeId)
+	{
+		uintOut = intOut = boost::any_cast<long>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == llTypeId)
+	{
+		uintOut = intOut = boost::any_cast<long long>(valOut);
+		floatOut = intOut;
+		oss << intOut;
+	}
+	else if (valOutType == ucharTypeId)
+	{
+		intOut = uintOut = boost::any_cast<unsigned char>(valOut);
+		floatOut = uintOut;
+		oss << uintOut;
+	}
+	else if (valOutType == ushortTypeId)
+	{
+		intOut = uintOut = boost::any_cast<unsigned short>(valOut);
+		floatOut = uintOut;
+		oss << uintOut;
+	}
+	else if (valOutType == uintTypeId)
+	{
+		intOut = uintOut = boost::any_cast<unsigned int>(valOut);
+		floatOut = uintOut;
+		oss << uintOut;
+	}
+	else if (valOutType == ulongTypeId)
+	{
+		intOut = uintOut = boost::any_cast<unsigned long>(valOut);
+		floatOut = uintOut;
+		oss << uintOut;
+	}
+	else if (valOutType == ullTypeId)
+	{
+		intOut = uintOut = boost::any_cast<unsigned long long>(valOut);
+		floatOut = uintOut;
+		oss << uintOut;
+	}
+	else if (valOutType == floatTypeId)
+	{
+		floatOut = boost::any_cast<float>(valOut);
+		doubleOut = floatOut;
+		intOut = uintOut = floatOut;
+		oss << floatOut;
+	}
+	else if (valOutType == doubleTypeId)
+	{
+		doubleOut = boost::any_cast<double>(valOut);
+		floatOut = (float)doubleOut;
+		uintOut = (uint64_t)doubleOut;
+		intOut = (int64_t)doubleOut;
+		oss << doubleOut;
+	}
+
+	if (valOutType == strTypeId)
+	{
+		std::string strOut = boost::any_cast<std::string>(valOut);
+		// Convert the string to numeric type, just in case.
+		intOut = atol(strOut.c_str());
+		uintOut = strtoul(strOut.c_str(), NULL, 10);
+		doubleOut = strtod(strOut.c_str(), NULL);
+		floatOut = (float)doubleOut;
+	}
+	else
+	{
+		strOut = oss.str();
+	}
 
 	switch (colDataType)
 	{
+		case execplan::CalpontSystemCatalog::BIT:
 		case execplan::CalpontSystemCatalog::TINYINT:
+			fRow.setIntField<1>(intOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::SMALLINT:
 		case execplan::CalpontSystemCatalog::MEDINT:
+			fRow.setIntField<2>(intOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::INT:
+			fRow.setIntField<4>(intOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::BIGINT:
 		case execplan::CalpontSystemCatalog::DECIMAL:
 		case execplan::CalpontSystemCatalog::UDECIMAL:
-		{
-			datum.dataType = execplan::CalpontSystemCatalog::BIGINT;
-			datum.columnData = rowIn.getIntField(colIn);
-			datum.decimals = fRowGroupIn.getPrecision()[colIn];
+			fRow.setIntField<8>(intOut, colOut);
 			break;
-		}
 		case execplan::CalpontSystemCatalog::UTINYINT:
+			fRow.setUintField<1>(uintOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::USMALLINT:
 		case execplan::CalpontSystemCatalog::UMEDINT:
+			fRow.setUintField<2>(uintOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::UINT:
+			fRow.setUintField<4>(uintOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::UBIGINT:
-		{
-			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
-			datum.columnData = rowIn.getUintField(colIn);
+			fRow.setUintField<8>(uintOut, colOut);
 			break;
-		}
-		case execplan::CalpontSystemCatalog::DOUBLE:
-		case execplan::CalpontSystemCatalog::UDOUBLE:
-		{
-			datum.dataType = execplan::CalpontSystemCatalog::DOUBLE;
-			datum.columnData = rowIn.getDoubleField(colIn);
-			break;
-		}
-		case execplan::CalpontSystemCatalog::FLOAT:
-		case execplan::CalpontSystemCatalog::UFLOAT:
-		{
-			datum.dataType = execplan::CalpontSystemCatalog::FLOAT;
-			datum.columnData = rowIn.getFloatField(colIn);
-			break;
-		}
 		case execplan::CalpontSystemCatalog::DATE:
 		case execplan::CalpontSystemCatalog::DATETIME:
-		{
-			datum.dataType = execplan::CalpontSystemCatalog::UBIGINT;
-			datum.columnData = rowIn.getUintField(colIn);
+
+			fRow.setUintField<8>(uintOut, colOut);
 			break;
-		}
+		case execplan::CalpontSystemCatalog::FLOAT:
+		case execplan::CalpontSystemCatalog::UFLOAT:
+			fRow.setFloatField(floatOut, colOut);
+			break;
+		case execplan::CalpontSystemCatalog::DOUBLE:
+		case execplan::CalpontSystemCatalog::UDOUBLE:
+			fRow.setDoubleField(doubleOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::CHAR:
 		case execplan::CalpontSystemCatalog::VARCHAR:
 		case execplan::CalpontSystemCatalog::TEXT:
+			fRow.setStringField(strOut, colOut);
+			break;
 		case execplan::CalpontSystemCatalog::VARBINARY:
 		case execplan::CalpontSystemCatalog::CLOB:
 		case execplan::CalpontSystemCatalog::BLOB:
-		{
-			datum.dataType = colDataType;
-			datum.columnData = rowIn.getStringField(colIn);
+			fRow.setVarBinaryField(strOut, colOut);
 			break;
-		}
 		default:
 		{
 			std::ostringstream errmsg;
-			errmsg << "RowAggregation " << rowUDAF->fUDAFContext.getName() << 
-				": No logic for data type: " << colDataType;
+			errmsg << "RowAggregation: No logic for data type: " << colDataType;
 			throw logging::QueryDataExcept(errmsg.str(), logging::aggregateFuncErr);
 			break;
 		}
 	}
-	valsIn.push_back(datum);
-
-	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
-	{
-		throw logic_error("(4)A UDAF function is called but there's no entry in UDAF_MAP");
-	}
-	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
-	rc = funcIter->second->nextValue(&rowUDAF->fUDAFContext, valsIn);
-	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
-	{
-		throw logging::QueryDataExcept(rowUDAF->fUDAFContext.getErrorMessage(), logging::aggregateFuncErr);
-		rowUDAF->bInterrupted = true;
-	}
-#endif
 }
 
+//------------------------------------------------------------------------------
+//
+// For each rowgroup, calculate the final value.
+//------------------------------------------------------------------------------
+void RowAggregationUM::calculateUDAFColumns()
+{
+	RowUDAFFunctionCol* rowUDAF = NULL;
+	boost::any valOut;
 
 
+	for (uint64_t i = 0; i < fFunctionCols.size(); i++)
+	{
+		if (fFunctionCols[i]->fAggFunction != ROWAGG_UDAF)
+			continue;
 
+		rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+		mcsv1sdk::mcsv1Context rgContext(rowUDAF->fUDAFContext);
 
+		// At this point, each row is an aggragated GROUP BY.
+		for (uint64_t j = 0; j < fRowGroupOut->getRowCount(); j++)
+		{
+			int64_t colOut = fFunctionCols[i]->fOutputColumnIndex;
+			int64_t colAux = fFunctionCols[i]->fAuxColumnIndex;
 
+			// Get the user data from the row and evaluate.
+			fRowGroupOut->getRow(j, &fRow);
+
+			// Turn the NULL flag off. We can't know NULL at this point
+			rgContext.setDataFlags(NULL);
+			// The intermediate values are stored in colAux. Retrieve them and
+			// evaluate. Rather than copying the data in and out, save the old
+			// pointer and point directly to the aux data
+			uint32_t userDataSize;
+			const uint8_t* userData = fRow.getVarBinaryField(userDataSize, colAux);
+			if (!userDataSize || userDataSize != rgContext.getUserDataSize())
+			{
+				// No user data? Guess we got no answer. Default is NULL
+				continue;
+			}
+			// Call the UDAF evaluate function
+			rgContext.setUserData(const_cast<uint8_t*>(userData));
+			mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+			rc = rowUDAF->pUDAFfunction->evaluate(&rgContext, valOut);
+			rgContext.setUserData(NULL);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				rowUDAF->bInterrupted = true;
+				throw logging::QueryDataExcept(rgContext.getErrorMessage(), logging::aggregateFuncErr);
+			}
+
+			// Set the returned value into the output row
+			SetUDAFValue(valOut, colOut);
+		}
+	}
+}
 
 //------------------------------------------------------------------------------
 // After all PM rowgroups received, calculate the statistics.
@@ -2670,6 +2834,58 @@ void RowAggregationUM::doNullConstantAggregate(const ConstantAggData& aggData, u
 		case ROWAGG_BIT_XOR:
 		{
 			fRow.setUintField(0, colOut);
+		}
+		break;
+
+		case ROWAGG_UDAF:
+		{
+			// For a NULL constant, call nextValue with NULL and then evaluate.
+			RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+			bool bInterrupted = false;
+			mcsv1sdk::mcsv1Context context;
+			context.setInterrupted(bInterrupted);
+			context.createUserData();
+			mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+			std::vector<mcsv1sdk::ColumnDatum> valsIn;
+
+			// Call a reset, then nextValue, then execute. This will evaluate
+			// the UDAF for the constant.
+			rc = rowUDAF->pUDAFfunction->reset(&context);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+
+			// Turn the NULL and CONSTANT flags on.
+			std::vector<uint32_t> flags;
+			uint32_t flag = mcsv1sdk::PARAM_IS_NULL | mcsv1sdk::PARAM_IS_CONSTANT;
+			flags.push_back(flag);
+			context.setDataFlags(&flags);
+
+			// Create a dummy datum
+			mcsv1sdk::ColumnDatum datum;
+			datum.dataType = execplan::CalpontSystemCatalog::BIGINT;
+			datum.columnData = 0;
+			datum.decimals = 0;
+			valsIn.push_back(datum);
+
+			rc = rowUDAF->pUDAFfunction->nextValue(&context, valsIn);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+			boost::any valOut;
+			rc = rowUDAF->pUDAFfunction->evaluate(&context, valOut);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+			// Set the returned value into the output row
+			SetUDAFValue(valOut, colOut);
+			context.setDataFlags(NULL);
 		}
 		break;
 
@@ -2954,7 +3170,126 @@ void RowAggregationUM::doNotNullConstantAggregate(const ConstantAggData& aggData
 
 		case ROWAGG_UDAF:
 		{
-			// TODO
+			RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+			bool bInterrupted = false;
+			mcsv1sdk::mcsv1Context context;
+			context.setInterrupted(bInterrupted);
+			context.createUserData();
+			mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+			std::vector<mcsv1sdk::ColumnDatum> valsIn;
+
+			// Call a reset, then nextValue, then execute. This will evaluate
+			// the UDAF for the constant.
+			rc = rowUDAF->pUDAFfunction->reset(&context);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+
+			// Turn the CONSTANT flags on.
+			std::vector<uint32_t> flags;
+			uint32_t flag = mcsv1sdk::PARAM_IS_CONSTANT;
+			flags.push_back(flag);
+			context.setDataFlags(&flags);
+
+			// Create a datum item for sending to UDAF
+			mcsv1sdk::ColumnDatum datum;
+			datum.dataType = (CalpontSystemCatalog::ColDataType)colDataType;
+			datum.decimals = 0;
+
+			switch (colDataType)
+			{
+				case execplan::CalpontSystemCatalog::TINYINT:
+				case execplan::CalpontSystemCatalog::SMALLINT:
+				case execplan::CalpontSystemCatalog::MEDINT:
+				case execplan::CalpontSystemCatalog::INT:
+				case execplan::CalpontSystemCatalog::BIGINT:
+				{
+					datum.columnData = strtol(aggData.fConstValue.c_str(), 0, 10);
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::UTINYINT:
+				case execplan::CalpontSystemCatalog::USMALLINT:
+				case execplan::CalpontSystemCatalog::UMEDINT:
+				case execplan::CalpontSystemCatalog::UINT:
+				case execplan::CalpontSystemCatalog::UBIGINT:
+				{
+					datum.columnData = strtoul(aggData.fConstValue.c_str(), 0, 10);
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::DECIMAL:
+				case execplan::CalpontSystemCatalog::UDECIMAL:
+				{
+					double dbl = strtod(aggData.fConstValue.c_str(), 0);
+					double scale = pow(10.0, (double) fRowGroupOut->getScale()[i]);
+					datum.columnData = (int64_t)(scale*dbl);
+					datum.decimals = scale;
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::DOUBLE:
+				case execplan::CalpontSystemCatalog::UDOUBLE:
+				{
+					datum.columnData = strtod(aggData.fConstValue.c_str(), 0);
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::FLOAT:
+				case execplan::CalpontSystemCatalog::UFLOAT:
+				{
+#ifdef _MSC_VER
+					datum.columnData = strtod(aggData.fConstValue.c_str(), 0);
+#else
+					datum.columnData = strtof(aggData.fConstValue.c_str(), 0);
+#endif
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::DATE:
+				{
+					datum.columnData = DataConvert::stringToDate(aggData.fConstValue);
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::DATETIME:
+				{
+					datum.columnData = DataConvert::stringToDatetime(aggData.fConstValue);
+				}
+				break;
+
+				case execplan::CalpontSystemCatalog::CHAR:
+				case execplan::CalpontSystemCatalog::VARCHAR:
+				case execplan::CalpontSystemCatalog::TEXT:
+				case execplan::CalpontSystemCatalog::VARBINARY:
+				case execplan::CalpontSystemCatalog::BLOB:
+				default:
+				{
+					datum.columnData = aggData.fConstValue;
+				}
+				break;
+			}
+
+			valsIn.push_back(datum);
+			rc = rowUDAF->pUDAFfunction->nextValue(&context, valsIn);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+
+			boost::any valOut;
+			rc = rowUDAF->pUDAFfunction->evaluate(&context, valOut);
+			if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+			{
+				context.setInterrupted(true);
+				throw logging::QueryDataExcept(context.getErrorMessage(), logging::aggregateFuncErr);
+			}
+			// Set the returned value into the output row
+			SetUDAFValue(valOut, colOut);
+			context.setDataFlags(NULL);
 		}
 		break;
 
@@ -3043,6 +3378,26 @@ void RowAggregationUM::setInputOutput(const RowGroup& pRowGroupIn, RowGroup* pRo
 		fExtHash.reset(new ExternalKeyHasher(fKeyRG, fKeyStore.get(), fKeyRG.getColumnCount(), &tmpRow));
 		fExtKeyMapAlloc.reset(new utils::STLPoolAllocator<pair<RowPosition, RowPosition> >());
 		fExtKeyMap.reset(new ExtKeyMap_t(10, *fExtHash, *fExtEq, *fExtKeyMapAlloc));
+	}
+
+	// For UDAF, get the function pointers
+	for (uint64_t i = 0; i < fFunctionCols.size(); i++)
+	{
+		if (fFunctionCols[i]->fAggFunction == ROWAGG_UDAF)
+		{
+			// Get the UDAF class pointer and store in the row definition object.
+			RowUDAFFunctionCol* rowUDAF = dynamic_cast<RowUDAFFunctionCol*>(fFunctionCols[i].get());
+			mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
+			if (UNLIKELY(funcIter == mcsv1sdk::UDAFMap::getMap().end()))
+			{
+				std::ostringstream errmsg;
+				errmsg << "RowAggregation::initialize: A UDAF function, " 
+					   << rowUDAF->fUDAFContext.getName() 
+					   << ", is called but there's no entry in UDAF_MAP";
+				throw logic_error(errmsg.str());
+			}
+			rowUDAF->pUDAFfunction = funcIter->second;   // Save for others
+		}
 	}
 }
 
@@ -3347,21 +3702,50 @@ void RowAggregationUMP2::doBitOp(const Row& rowIn, int64_t colIn, int64_t colOut
 		fRow.setUintField(valIn ^ valOut, colOut);
 }
 
+//------------------------------------------------------------------------------
+// Subaggregate the UDAF. This calls subaggregate for each partially 
+// aggregated row returned by the PM
+// rowIn(in)    - Row to be included in aggregation.
+// colIn(in)    - column in the input row group
+// colOut(in)   - column in the output row group
+// colAux(in)   - Where the UDAF userdata resides
+// rowUDAF(in)  - pointer to the RowUDAFFunctionCol for this UDAF instance 
+//------------------------------------------------------------------------------
 void RowAggregationUMP2::doUDAF(const Row& rowIn, int64_t colIn, int64_t colOut, int64_t colAux, 
 								RowUDAFFunctionCol* rowUDAF)
 {
-	mcsv1sdk::UDAF_MAP::iterator funcIter = mcsv1sdk::UDAFMap::getMap().find(rowUDAF->fUDAFContext.getName());
-	if (funcIter == mcsv1sdk::UDAFMap::getMap().end())
-	{
-		throw logic_error("(9) A UDAF function is called but there's no entry in UDAF_MAP");
-	}
 	boost::any valOut;
-	uint32_t userDataSize = rowUDAF->fUDAFContext.getUserDataSize();
-	const uint8_t* userData = fRow.getVarBinaryField(userDataSize, colAux);
-	funcIter->second->subEvaluate(&rowUDAF->fUDAFContext, userData);
-	fRow.setVarBinaryField(rowUDAF->fUDAFContext.getUserData(), 
-						   rowUDAF->fUDAFContext.getUserDataSize(), 
-						   colAux);
+	uint32_t userDataSize;
+	mcsv1sdk::mcsv1Context rgContext(rowUDAF->fUDAFContext);
+	const uint8_t* userData = rowIn.getVarBinaryField(userDataSize, colIn+1);
+	if (!userDataSize || userDataSize != rgContext.getUserDataSize())
+	{
+		// No user data? Guess we got no answer. Default is NULL
+		return;
+	}
+
+	// Turn on NULL flags
+	std::vector<uint32_t> flags;
+	uint32_t flag = 0;
+	if (isNull(&fRowGroupIn, rowIn, colIn) == true)
+		flag |= mcsv1sdk::PARAM_IS_NULL;
+	flags.push_back(flag);
+	rgContext.setDataFlags(&flags);
+
+	// The intermediate values are stored in colAux. Modify in place.
+	// This only works if userDataSize is fixed.
+	const uint8_t* aggUserData = fRow.getVarBinaryField(userDataSize, colAux);
+	rgContext.setUserData(const_cast<uint8_t*>(aggUserData));
+
+	mcsv1sdk::mcsv1_UDAF::ReturnCode rc;
+	// Call the UDAF subEvaluate method
+	rc = rowUDAF->pUDAFfunction->subEvaluate(&rgContext, userData);
+	rgContext.setUserData(NULL);
+	if (rc == mcsv1sdk::mcsv1_UDAF::ERROR)
+	{
+		rowUDAF->bInterrupted = true;
+		throw logging::QueryDataExcept(rgContext.getErrorMessage(), logging::aggregateFuncErr);
+	}
 }
 
 

@@ -894,22 +894,21 @@ const JobStepVector doAggProject(const CalpontSelectExecutionPlan* csep, JobInfo
 			AggregateColumn* ac = dynamic_cast<AggregateColumn*>(retCols[i].get());
 			if (ac != NULL)
 			{
-				UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(ac);
-				if (udafc)
-				{
-					UDAF_MAP::iterator funcIter = UDAFMap::getMap().find(udafc->getContext().getName());
-					if (funcIter == UDAFMap::getMap().end())
-					{
-						throw runtime_error ("Columnstore UDAF not found.");
-					}
-					udafc->setFunction(funcIter->second);
-				}
 				srcp = ac->functionParms();
 				sc = dynamic_cast<const SimpleColumn*>(srcp.get());
 				if (ac->constCol().get() != NULL)
 				{
 					// replace the aggregate on constant with a count(*)
-					SRCP clone(new AggregateColumn(*ac, ac->sessionID()));
+					SRCP clone;
+					UDAFColumn* udafc = dynamic_cast<UDAFColumn*>(ac);
+					if (udafc)
+					{
+						clone.reset(new UDAFColumn(*udafc, ac->sessionID()));
+					}
+					else
+					{
+						clone.reset(new AggregateColumn(*ac, ac->sessionID()));
+					}
 					jobInfo.constAggregate.insert(make_pair(i, clone));
 					ac->aggOp(AggregateColumn::COUNT_ASTERISK);
 					ac->distinct(false);

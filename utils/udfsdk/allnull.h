@@ -98,13 +98,19 @@ public:
 	allnull() : mcsv1_UDAF(){};
 	virtual ~allnull(){};
 
-	/**
+	/** 
+	 * init() 
+	 *  
 	 * Mandatory. Implement this to initialize flags and instance 
 	 * data. Called once per SQL statement. You can do any sanity 
 	 * checks here. 
 	 *  
-	 * colTypes (in) - A vector of ColTypes defining the parameters 
-	 * of the UDA(n)F call. 
+	 * colTypes (in) - A vector of ColDataType defining the 
+	 * parameters of the UDA(n)F call. These can be used to decide 
+	 * to override the default return type. If desired, the new 
+	 * return type can be set by context->setReturnType() and 
+	 * decimal precision can be set in context-> 
+	 * setResultDecimalCharacteristics. 
 	 *  
 	 * Return mcsv1_UDAF::ERROR on any error, such as non-compatible
 	 * colTypes or wrong number of arguments. Else return 
@@ -113,25 +119,34 @@ public:
 	virtual ReturnCode init(mcsv1Context* context,
 							COL_TYPES& colTypes);
 
-	/**
-	 * Mandatory. Completes the UDA(n)F. 
-	 * Called once per SQL statement. Do not free any memory 
-	 * allocated by context->allocUserData(). The SDK Framework owns 
-	 * that memory and will handle that. 
+	/** 
+	 * finish() 
+	 *  
+	 * Mandatory. Completes the UDA(n)F. Called once per SQL 
+	 * statement. Do not free any memory allocated by 
+	 * context->allocUserData(). The SDK Framework owns that memory 
+	 * and will handle that. Often, there is nothing to do here. 
 	 */
 	virtual ReturnCode finish(mcsv1Context* context);
 
-	/**
+	/** 
+	 * reset() 
+	 *  
 	 * Mandatory. Reset the UDA(n)F for a new group, partition or, 
 	 * in some cases, new Window Frame. Do not free any memory 
 	 * allocated by context->allocUserData(). The SDK Framework owns 
 	 * that memory and will handle that. Use this opportunity to 
 	 * reset any variables in context->getUserData() needed for the 
-	 * next aggregation. 
+	 * next aggregation. May be called multiple times if running in 
+	 * a ditributed fashion. 
+	 *  
+	 * Use this opportunity to initialize the userData.
 	 */
 	virtual ReturnCode reset(mcsv1Context* context);
 
-	/**
+	/** 
+	 * nextValue() 
+	 *  
 	 * Mandatory. Handle a single row. 
 	 *  
 	 * colsIn - A vector of data structure describing the input 
@@ -150,7 +165,36 @@ public:
 	virtual ReturnCode nextValue(mcsv1Context* context, 
 								 std::vector<ColumnDatum>& valsIn);
 
-	/**
+	 /** 
+	  * subEvaluate() 
+	  *  
+	  * Mandatory -- Called if the UDAF is running in a distributed 
+	  * fashion. Columnstore tries to run all aggregate functions 
+	  * distributed, depending on context. 
+	  *  
+	  * Perform an aggregation on rows partially aggregated by 
+	  * nextValue. Columnstore calls nextValue for each row on a 
+	  * given PM for a group (GROUP BY). subEvaluate is called on the
+	  * UM to consolodate those values into a single instance of 
+	  * userData. Keep your aggregated totals in context's userData. 
+	  * The first time this is called for a group, reset() would have 
+	  * been called with this version of userData. 
+	  *  
+	  * Called for every partial data set in each group in GROUP BY.
+	  *  
+	  * When subEvaluate has been called for all subAggregated data 
+	  * sets, Evaluate will be called with the same context as here.
+	  *  
+	  * valIn (In) - This is a pointer to a memory block of the size 
+	  * set in allocUserData. It will contain the value of userData 
+	  * as seen in the last call to NextValue for a given PM.
+	  *  
+	  */
+	 virtual ReturnCode subEvaluate(mcsv1Context* context, const void* valIn);
+
+	/** 
+	 * evaluate() 
+	 *  
 	 * Mandatory. Get the aggregated value.
 	 *  
 	 * Called for every new group if UDAF GROUP BY, UDAnF partition 
@@ -160,115 +204,14 @@ public:
 	 * to be the same as that set in the init() function; 
 	 *  
 	 * If the UDAF is running in a distributed fashion, evaluate is 
-	 * not called. 
+	 * called after a series of subEvaluate calls. 
 	 *  
 	 * valOut (out) - Set the aggregated value here. The datatype is
 	 * assumed to be the same as that set in the init() function; 
 	 *  
-	 * isNull (out) set to true if the result is NULL. valOut will 
-	 * be ignored. 
+	 * To return a NULL value, don't assign to valOut.
 	 */
-	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut, bool& isNull);
-
-	/** 
-	 * Optional -- If defined, the server may run the UDAF in a 
-	 * distributed fashion. Use setRunFlag(UDAF_MAYBE_DISTRIBUTED) 
-	 * to enable distributed UDAF. 
-	 *  
-	 * Perform an agggregation on rows partially aggregated by 
-	 * nextValue. Columnstore calls nextValue for each row on a 
-	 * given PM for a group (GROUP BY). subEvaluateis called to 
-	 * consolodate those values into a single instance of userData. 
-	 * As usual, keep your aggregated totals in context. The first 
-	 * time this is called for a group, reset() would have been 
-	 * called with this version of userData. 
-	 *  
-	 * Called for every partial data set in each group in GROUP BY
-	 *  
-	 * When subEvaluate has been called for all subAggregated data 
-	 * sets, Evaluate will be called with the same context as here.
-	 *  
-	 * valIn (In) - This is a pointer to a memory block of the size 
-	 * set in allocUserData. It will contain the value of userData 
-	 * as seen in the last call to NextValue for a given PM.  Don't 
-	 * assume it will be in the same place in memory -- it won't be.
-	 *  
-	 */
-	virtual ReturnCode subEvaluate(mcsv1Context* context, const void* valIn);
-
-	 /** 
-	  * Optional -- If defined, the server may run the UDAF in a 
-	  * distributed fashion. 
-	  *  
-	  * Get the final aggregated value from a set of sub aggregations 
-	  * performed on the PMs or multi-threaded aggregation on the UM.
-	  *  
-	  * Called for every new group if UDAF GROUP BY
-	  *  
-	  * If the UDAF is running in a distributed fashion, 
-	  * superEvaluate is called on the UM for each group. context is 
-	  * not shared between subEvaluate and superEvaluate. 
-	  *  
-	  * valsIn (in) - a vector of the return values of each 
-	  * subEvaluate for this GROUP 
-	  *  
-	  * valOut (out) - set this to the final aggregation value for 
-	  * the GROUP. The datatype is assumed to be the same as that set 
-	  * in the init() function; 
-	  *  
-	  * isNull (out) set to true if the result is NULL. valOut will 
-	  * be ignored. 
-	  */
-	virtual ReturnCode superEvaluate(mcsv1Context* context, 
-									 std::vector<boost::any>& valsIn,
-		                             boost::any& valOut, bool& isNull);
-
-	 /** 
-	  * Optional -- If defined, the server will call this instead of 
-	  * reset for UDAnF. 
-	  *  
-	  * Don't implement if a UDAnF has one or more of the following: 
-	  * The UDAnF can't be used with a Window Frame
-	  * The UDAnF is not reversable in some way 
-	  * The UDAnF is not interested in optimal performance 
-	  *  
-	  * If not implemented, reset() followed by a series of 
-	  * nextValue() will be called for each movement of the Window 
-	  * Frame. 
-	  *  
-	  * If implemented, then each movement of the Window Frame will 
-	  * result in dropValue() being called for each row falling out 
-	  * of the Frame and nextValue() being called for each new row 
-	  * coming into the Frame. 
-	  *  
-	  * valsDropped (in) - a vector of the parameters from the row 
-	  * leaving the Frame 
-	  */
-//	 virtual ReturnCode dropValue(mcsv1Context* context, 
-//								  std::vector<boost::any>& valsDropped);
-
-	/**
-	 * Optional - for UDAnF that have a Frame of UNBOUNDED PRECEDING 
-	 * to CURRENT ROW. 
-	 *  
-	 * if implemented, evaluateCumulative() is called instead of
-	 * nextValue() and evaluate(). 
-	 *  
-	 * If not implemented, nextValue() and evaluate() will each be 
-	 * called for each Frame movement. 
-	 *  
-	 * valsIn (in) - a vector of the parameters from the row.
-	 *  
-	 * valOut (out) - set this to the final aggregation value for 
-	 * the row. The datatype is assumed to be the same as that set 
-	 * in the init() function; 
-	 *  
-	 * isNull (out) set to true if the result is NULL. valOut will 
-	 * be ignored. 
-	 */
-//	virtual ReturnCode evaluateCumulative(mcsv1Context* context, 
-//									std::vector<boost::any>& valsIn,
-//		                            boost::any& valOut, bool& isNull);
+	virtual ReturnCode evaluate(mcsv1Context* context, boost::any& valOut);
 
 protected:
 
