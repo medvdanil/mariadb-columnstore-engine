@@ -198,11 +198,21 @@ namespace ddlpackage
     		fType->fType = DDL_INT;
     		fType->fLength = 4;
     	}
-    	else if (fType->fPrecision > 9 && fType->fPrecision < 19)
-    	{
+		else if (fType->fPrecision > 9 && fType->fPrecision < 19)
+		{
     					//dataType = CalpontSystemCatalog::BIGINT;
     		fType->fType = DDL_BIGINT;
     		fType->fLength = 8;
-    	}
+		}
+		else if (fType->fPrecision > 18 && fType->fPrecision < 39)
+		{
+			fType->fType = DDL_INT128;
+			fType->fLength = 16;
+		}
+		else if (fType->fPrecision > 38 && fType->fPrecision < 77)
+		{
+			fType->fType = DDL_INT256;
+			fType->fLength = 32;
+		}
     }
 }

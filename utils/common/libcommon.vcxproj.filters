@@ -21,6 +21,9 @@
     <ClCompile Include="fixedallocator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+		<ClCompile Include="int128.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MonitorProcMem.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -178,6 +178,16 @@ pColScanStep::pColScanStep(
 		fColType.colWidth = 8;
 		fIsDict = true;
 	}
+	else if (fColType.colDataType == CalpontSystemCatalog::INT128)
+	{
+		fColType.colWidth = 16;
+		fIsDict = false;
+	}
+	else if (fColType.colDataType == CalpontSystemCatalog::INT256)
+	{
+		fColType.colWidth = 32;
+		fIsDict = false;
+	}
 	else if (fColType.colWidth > 8 )
 	{
 		fColType.colWidth = 8;

@@ -432,10 +432,10 @@ uint8_t WE_DDLCommandProc::writeCreateSyscolumn(ByteStream& bs, std::string &err
 			if (dataType == CalpontSystemCatalog::DECIMAL ||
 				dataType == CalpontSystemCatalog::UDECIMAL)
 			{
-				if (colDefPtr->fType->fPrecision > 18) //@Bug 5717 precision cannot be over 18.
+				if (colDefPtr->fType->fPrecision > 65) // In fact 76 is maximum, but we will use 65 like MariaDB
 				{
 					ostringstream os;
-					os << "Syntax error: The maximum precision (total number of digits) that can be specified is 18";
+					os << "Syntax error: The maximum precision (total number of digits) that can be specified is 65";
 					throw std::runtime_error(os.str());
 				}
 				else if	 (colDefPtr->fType->fPrecision < colDefPtr->fType->fScale)

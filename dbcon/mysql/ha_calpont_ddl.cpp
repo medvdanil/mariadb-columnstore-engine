@@ -121,9 +121,17 @@ uint32_t convertDataType(int dataType)
 		case ddlpackage::DDL_VARCHAR:
 			calpontDataType = CalpontSystemCatalog::VARCHAR;
 			break;
-
+			
 		case ddlpackage::DDL_VARBINARY:
 			calpontDataType = CalpontSystemCatalog::VARBINARY;
+			break;
+			
+		case ddlpackage::DDL_INT128:
+			calpontDataType = CalpontSystemCatalog::INT128;
+			break;
+			
+		case ddlpackage::DDL_INT256:
+			calpontDataType = CalpontSystemCatalog::INT256;
 			break;
 
 		case ddlpackage::DDL_BIT:

@@ -316,6 +316,8 @@ string extractTableAlias(const SSC& sc)
 //------------------------------------------------------------------------------
 CalpontSystemCatalog::OID isDictCol(const CalpontSystemCatalog::ColType& colType)
 {
+	if (colType.colDataType == CalpontSystemCatalog::INT128) return 0;
+	if (colType.colDataType == CalpontSystemCatalog::INT256) return 0;
 	if (colType.colWidth > 8) return colType.ddn.dictOID;
 	if (colType.colDataType == CalpontSystemCatalog::VARCHAR &&
 		colType.colWidth > 7) return colType.ddn.dictOID;
