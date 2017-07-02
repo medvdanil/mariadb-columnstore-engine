@@ -199,6 +199,12 @@ void SimpleColumn_Decimal<len>::serialize(messageqcpp::ByteStream& b) const
 		case 8:
 			b << (ObjectReader::id_t) ObjectReader::SIMPLECOLUMN_DECIMAL8;
 			break;
+		case 16:
+			b << (ObjectReader::id_t) ObjectReader::SIMPLECOLUMN_DECIMAL16;
+			break;
+		case 32:
+			b << (ObjectReader::id_t) ObjectReader::SIMPLECOLUMN_DECIMAL32;
+			break;
 	}
 	SimpleColumn::serialize(b);
 }
@@ -219,6 +225,12 @@ void SimpleColumn_Decimal<len>::unserialize(messageqcpp::ByteStream& b)
 			break;
 		case 8:
 			ObjectReader::checkType(b, ObjectReader::SIMPLECOLUMN_DECIMAL8);
+			break;
+		case 16:
+			ObjectReader::checkType(b, ObjectReader::SIMPLECOLUMN_DECIMAL16);
+			break;
+		case 32:
+			ObjectReader::checkType(b, ObjectReader::SIMPLECOLUMN_DECIMAL32);
 			break;
 	}
 	SimpleColumn::unserialize(b);

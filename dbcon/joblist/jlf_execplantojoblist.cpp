@@ -525,7 +525,9 @@ TreeNodeType TreeNode2Type(const TreeNode* tn)
 	if (typeid(*tn) == typeid(SimpleColumn_Decimal<1>) ||
 		typeid(*tn) == typeid(SimpleColumn_Decimal<2>) ||
 		typeid(*tn) == typeid(SimpleColumn_Decimal<4>) ||
-		typeid(*tn) == typeid(SimpleColumn_Decimal<8>))
+		typeid(*tn) == typeid(SimpleColumn_Decimal<8>) ||
+		typeid(*tn) == typeid(SimpleColumn_Decimal<16>) ||
+		typeid(*tn) == typeid(SimpleColumn_Decimal<32>))
 		return SIMPLECOLUMN;
 	if (typeid(*tn) == typeid(PseudoColumn))
 		return SIMPLECOLUMN;

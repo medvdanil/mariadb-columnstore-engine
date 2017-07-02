@@ -112,6 +112,12 @@ TreeNode* ObjectReader::createTreeNode(messageqcpp::ByteStream& b) {
 		case SIMPLECOLUMN_DECIMAL8:
 			ret = new SimpleColumn_Decimal<8>();
 			break;
+		case SIMPLECOLUMN_DECIMAL16:
+			ret = new SimpleColumn_Decimal<16>();
+			break;
+		case SIMPLECOLUMN_DECIMAL32:
+			ret = new SimpleColumn_Decimal<32>();
+			break;
 		case SIMPLECOLUMN_DECIMAL1:
 			ret = new SimpleColumn_Decimal<1>();
 			break;

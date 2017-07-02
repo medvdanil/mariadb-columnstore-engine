@@ -696,10 +696,14 @@ int Convertor::getCorrectRowWidth(CalpontSystemCatalog::ColDataType dataType, in
                 newWidth = 1;
             else if (width == 2)
                 newWidth = 2;
-            else if (width <= 4)
+			else if (width == 4)
                 newWidth = 4;
-            else
+			else if (width == 8)
                 newWidth = 8;
+			else if (width <= 16)
+                newWidth = 16;
+            else
+                newWidth = 32;
             break;
         case CalpontSystemCatalog::DATE: 
             newWidth = 4; break;

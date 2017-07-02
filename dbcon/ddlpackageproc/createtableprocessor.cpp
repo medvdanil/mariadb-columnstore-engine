@@ -527,11 +527,11 @@ cout << fTxnid.id << " Create table WE_SVR_WRITE_CREATE_SYSCOLUMN: " << errorMsg
 				}
 				else if (colDefPtr->fType->fPrecision > 18 && colDefPtr->fType->fPrecision < 39)
 				{
-					colDefPtr->fType->fLength = 8;
+					colDefPtr->fType->fLength = 16;
 				}
 				else if (colDefPtr->fType->fPrecision > 38 && colDefPtr->fType->fPrecision < 77)
 				{
-					colDefPtr->fType->fLength = 8;
+					colDefPtr->fType->fLength = 32;
 				}
 			}
 			bytestream << (fStartingColOID + (colNum++) + 1);

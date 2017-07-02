@@ -460,6 +460,8 @@ inline bool Row::equals(uint64_t val, uint32_t colIndex) const
 		case 2: return *((uint16_t *) &data[offsets[colIndex]]) == val;
 		case 4: return *((uint32_t *) &data[offsets[colIndex]]) == val;
 		case 8: return *((uint64_t *) &data[offsets[colIndex]]) == val;
+		case 16: return *((uint64_t *) &data[offsets[colIndex]]) == val;
+		case 32: return *((uint64_t *) &data[offsets[colIndex]]) == val;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::equals(): bad length.");
@@ -486,6 +488,8 @@ inline uint64_t Row::getUintField(uint32_t colIndex) const
 		case 2: return *((uint16_t *) &data[offsets[colIndex]]);
 		case 4: return *((uint32_t *) &data[offsets[colIndex]]);
 		case 8: return *((uint64_t *) &data[offsets[colIndex]]);
+		case 16: return *((uint64_t *) &data[offsets[colIndex]]);
+		case 32: return *((uint64_t *) &data[offsets[colIndex]]);
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::getUintField(): bad length.");
@@ -499,6 +503,8 @@ inline uint64_t Row::getUintField(uint32_t colIndex) const
 		case 2: return *((uint16_t *) &data[offsets[colIndex]]);
 		case 4: return *((uint32_t *) &data[offsets[colIndex]]);
 		case 8: return *((uint64_t *) &data[offsets[colIndex]]);
+		case 16: return *((uint64_t *) &data[offsets[colIndex]]);
+		case 32: return *((uint64_t *) &data[offsets[colIndex]]);
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::getUintField(): bad length.");
@@ -514,6 +520,8 @@ inline int64_t Row::getIntField(uint32_t colIndex) const
 		case 2: return *((int16_t *) &data[offsets[colIndex]]);
 		case 4: return *((int32_t *) &data[offsets[colIndex]]);
 		case 8: return *((int64_t *) &data[offsets[colIndex]]);
+		case 16: return *((int64_t *) &data[offsets[colIndex]]);
+		case 32: return *((int64_t *) &data[offsets[colIndex]]);
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::getIntField(): bad length.");
@@ -528,6 +536,8 @@ inline int64_t Row::getIntField(uint32_t colIndex) const
 		case 2: return *((int16_t *) &data[offsets[colIndex]]);
 		case 4: return *((int32_t *) &data[offsets[colIndex]]);
 		case 8: return *((int64_t *) &data[offsets[colIndex]]);
+		case 16: return *((int64_t *) &data[offsets[colIndex]]);
+		case 32: return *((int64_t *) &data[offsets[colIndex]]);
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::getIntField(): bad length.");
@@ -672,6 +682,8 @@ inline void Row::setUintField_offset(uint64_t val, uint32_t offset)
 		case 2: *((uint16_t *) &data[offset]) = val; break;
 		case 4: *((uint32_t *) &data[offset]) = val; break;
 		case 8: *((uint64_t *) &data[offset]) = val; break;
+		case 16: *((uint64_t *) &data[offset]) = val; break;
+		case 32: *((uint64_t *) &data[offset]) = val; break;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::setUintField called on a non-uint32_t field");
@@ -691,6 +703,8 @@ inline void Row::setUintField(uint64_t val, uint32_t colIndex)
 		case 2: *((uint16_t *) &data[offsets[colIndex]]) = val; break;
 		case 4: *((uint32_t *) &data[offsets[colIndex]]) = val; break;
 		case 8: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
+		case 16: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
+		case 32: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::setUintField called on a non-uint32_t field");
@@ -704,6 +718,8 @@ inline void Row::setUintField(uint64_t val, uint32_t colIndex)
 		case 2: *((uint16_t *) &data[offsets[colIndex]]) = val; break;
 		case 4: *((uint32_t *) &data[offsets[colIndex]]) = val; break;
 		case 8: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
+		case 16: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
+		case 32: *((uint64_t *) &data[offsets[colIndex]]) = val; break;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::setUintField: bad length");
@@ -718,6 +734,8 @@ inline void Row::setIntField(int64_t val, uint32_t colIndex)
 		case 2: *((int16_t *) &data[offsets[colIndex]]) = val; break;
 		case 4: *((int32_t *) &data[offsets[colIndex]]) = val; break;
 		case 8: *((int64_t *) &data[offsets[colIndex]]) = val; break;
+		case 16: *((int64_t *) &data[offsets[colIndex]]) = val; break;
+		case 32: *((int64_t *) &data[offsets[colIndex]]) = val; break;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::setIntField: bad length");
@@ -731,6 +749,8 @@ inline void Row::setIntField(int64_t val, uint32_t colIndex)
 		case 2: *((int16_t *) &data[offsets[colIndex]]) = val; break;
 		case 4: *((int32_t *) &data[offsets[colIndex]]) = val; break;
 		case 8: *((int64_t *) &data[offsets[colIndex]]) = val; break;
+		case 16: *((int64_t *) &data[offsets[colIndex]]) = val; break;
+		case 32: *((int64_t *) &data[offsets[colIndex]]) = val; break;
 		default:
 			idbassert(0);
 			throw std::logic_error("Row::setIntField: bad length");

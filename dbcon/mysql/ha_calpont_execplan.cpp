@@ -3427,6 +3427,14 @@ SimpleColumn* buildSimpleColumn(Item_field* ifp, gp_walk_info& gwi)
 				ct.colDataType = CalpontSystemCatalog::DECIMAL;
 			}
 			break;
+		case CalpontSystemCatalog::DECIMAL128:
+			sc = new SimpleColumn_Decimal<16>(ifp->db_name, bestTableName(ifp), ifp->field_name, infiniDB, gwi.sessionid);
+			ct.colDataType = CalpontSystemCatalog::DECIMAL;
+			break;
+		case CalpontSystemCatalog::DECIMAL256:
+			sc = new SimpleColumn_Decimal<32>(ifp->db_name, bestTableName(ifp), ifp->field_name, infiniDB, gwi.sessionid);
+			ct.colDataType = CalpontSystemCatalog::DECIMAL;
+			break;
         case CalpontSystemCatalog::UTINYINT:
             sc = new SimpleColumn_UINT<1>(ifp->db_name, bestTableName(ifp), ifp->field_name, infiniDB, gwi.sessionid);
             break;
