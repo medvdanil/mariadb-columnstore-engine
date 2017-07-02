@@ -126,12 +126,12 @@ uint32_t convertDataType(int dataType)
 			calpontDataType = CalpontSystemCatalog::VARBINARY;
 			break;
 			
-		case ddlpackage::DDL_INT128:
-			calpontDataType = CalpontSystemCatalog::INT128;
+		case ddlpackage::DDL_DECIMAL128:
+			calpontDataType = CalpontSystemCatalog::DECIMAL128;
 			break;
 			
-		case ddlpackage::DDL_INT256:
-			calpontDataType = CalpontSystemCatalog::INT256;
+		case ddlpackage::DDL_DECIMAL256:
+			calpontDataType = CalpontSystemCatalog::DECIMAL256;
 			break;
 
 		case ddlpackage::DDL_BIT:

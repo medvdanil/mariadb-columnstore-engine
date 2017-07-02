@@ -107,9 +107,7 @@ class WE_DMLCommandProc
 		inline bool isDictCol ( execplan::CalpontSystemCatalog::ColType colType )
 		{
 			if (((colType.colDataType == execplan::CalpontSystemCatalog::CHAR) && (colType.colWidth > 8)) 
-				|| ((colType.colDataType == execplan::CalpontSystemCatalog::VARCHAR) && (colType.colWidth > 7)) 
-				|| ((colType.colDataType == execplan::CalpontSystemCatalog::DECIMAL) && (colType.precision > 18))
-				|| ((colType.colDataType == execplan::CalpontSystemCatalog::UDECIMAL) && (colType.precision > 18))
+				|| ((colType.colDataType == execplan::CalpontSystemCatalog::VARCHAR) && (colType.colWidth > 7))
 				|| (colType.colDataType == execplan::CalpontSystemCatalog::VARBINARY)
                 || (colType.colDataType == execplan::CalpontSystemCatalog::BLOB)
                 || (colType.colDataType == execplan::CalpontSystemCatalog::TEXT))

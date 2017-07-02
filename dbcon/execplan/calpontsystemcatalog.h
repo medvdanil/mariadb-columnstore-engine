@@ -153,9 +153,9 @@ public:
 			UFLOAT,			/*!< Unsigned FLOAT type */
 			UBIGINT,		/*!< Unsigned BIGINT type */
 			UDOUBLE,		/*!< Unsigned DOUBLE type */
-            TEXT,           /*!< TEXT type */
-            INT128,			/*!< INT128 type */
-            INT256,			/*!< INT256 type */
+			TEXT,           /*!< TEXT type */
+			DECIMAL128,			/*!< DECIMAL128 type */
+			DECIMAL256,			/*!< DECIMAL256 type */
 			NUM_OF_COL_DATA_TYPE, /* NEW TYPES ABOVE HERE */
 			LONGDOUBLE,		/* @bug3241, dev and variance calculation only */
 			STRINT			/* @bug3532, string as int for fast comparison */

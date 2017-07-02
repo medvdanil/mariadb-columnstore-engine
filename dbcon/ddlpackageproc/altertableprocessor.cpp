@@ -171,11 +171,11 @@ bool typesAreSame(const CalpontSystemCatalog::ColType& colType, const ColumnType
 	case (CalpontSystemCatalog::VARBINARY):
 		if (newType.fType == DDL_VARBINARY && colType.colWidth == newType.fLength) return true;
 		break;
-	case (CalpontSystemCatalog::INT128):
-		if (newType.fType == DDL_INT128 && colType.colWidth == newType.fLength) return true;
+	case (CalpontSystemCatalog::DECIMAL128):
+		if (newType.fType == DDL_DECIMAL128 && colType.colWidth == newType.fLength) return true;
 		break;
-	case (CalpontSystemCatalog::INT256):
-		if (newType.fType == DDL_INT256 && colType.colWidth == newType.fLength) return true;
+	case (CalpontSystemCatalog::DECIMAL256):
+		if (newType.fType == DDL_DECIMAL256 && colType.colWidth == newType.fLength) return true;
 		break;
 	case (CalpontSystemCatalog::CLOB):
 		break;

@@ -349,8 +349,7 @@ namespace ddlpackageprocessor
   bool DDLIndexPopulator::isDictionaryType(const CalpontSystemCatalog::ColType& colType)
   {
     return ( (CalpontSystemCatalog::CHAR == colType.colDataType && 8 < colType.colWidth ) 
-	     || (CalpontSystemCatalog::VARCHAR == colType.colDataType  &&  7 < colType.colWidth ) 
-	     || (CalpontSystemCatalog::DECIMAL == colType.colDataType  &&  18 < colType.precision ));
+	     || (CalpontSystemCatalog::VARCHAR == colType.colDataType  &&  7 < colType.colWidth ));
 
   }
 

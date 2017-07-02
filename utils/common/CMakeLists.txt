@@ -9,7 +9,7 @@ set(common_LIB_SRCS
     cgroupconfigurator.cpp
     MonitorProcMem.cpp
     nullvaluemanip.cpp
-		int128.cpp)
+    decimal128.cpp)
 
 add_library(common SHARED ${common_LIB_SRCS})
 

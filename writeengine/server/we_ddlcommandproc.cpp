@@ -2261,11 +2261,7 @@ uint8_t WE_DDLCommandProc::updateSyscolumnTablename(ByteStream& bs, std::string 
 			|| (column.colType.colDataType == CalpontSystemCatalog::BLOB
 				&& column.colType.colWidth > 7)
 			|| (column.colType.colDataType == CalpontSystemCatalog::TEXT
-				&& column.colType.colWidth > 7)
-			|| (column.colType.colDataType == CalpontSystemCatalog::DECIMAL
-				&& column.colType.precision > 18)
-			|| (column.colType.colDataType == CalpontSystemCatalog::UDECIMAL
-				&& column.colType.precision > 18) )//token
+				&& column.colType.colWidth > 7) )//token
 	{
 		colStruct.colWidth = 8;
 		colStruct.tokenFlag = true;
@@ -3021,11 +3017,7 @@ uint8_t WE_DDLCommandProc::updateSystablesTablename(ByteStream& bs, std::string 
 			|| (column.colType.colDataType == CalpontSystemCatalog::BLOB
 				&& column.colType.colWidth > 7)
 			|| (column.colType.colDataType == CalpontSystemCatalog::TEXT
-				&& column.colType.colWidth > 7)
-			|| (column.colType.colDataType == CalpontSystemCatalog::DECIMAL
-				&& column.colType.precision > 18)
-			|| (column.colType.colDataType == CalpontSystemCatalog::UDECIMAL
-				&& column.colType.precision > 18) )//token
+				&& column.colType.colWidth > 7) )//token
 	{
 		colStruct.colWidth = 8;
 		colStruct.tokenFlag = true;
@@ -3905,11 +3897,7 @@ uint8_t WE_DDLCommandProc::updateSyscolumnSetDefault(messageqcpp::ByteStream& bs
 		|| (column.colType.colDataType == CalpontSystemCatalog::BLOB
 			&& column.colType.colWidth > 7)
 		|| (column.colType.colDataType == CalpontSystemCatalog::TEXT
-			&& column.colType.colWidth > 7)
-		|| (column.colType.colDataType == CalpontSystemCatalog::DECIMAL
-			&& column.colType.precision > 18)
-		|| (column.colType.colDataType == CalpontSystemCatalog::UDECIMAL
-			&& column.colType.precision > 18) )//token
+			&& column.colType.colWidth > 7) )//token
 	{
 		colStruct.colWidth = 8;
 		colStruct.tokenFlag = true;
@@ -4177,11 +4165,7 @@ uint8_t WE_DDLCommandProc::updateSyscolumnRenameColumn(messageqcpp::ByteStream& 
 		|| (column1.colType.colDataType == CalpontSystemCatalog::BLOB
 			&& column1.colType.colWidth > 7)
 		|| (column1.colType.colDataType == CalpontSystemCatalog::TEXT
-			&& column1.colType.colWidth > 7)
-		|| (column1.colType.colDataType == CalpontSystemCatalog::DECIMAL
-			&& column1.colType.precision > 18)
-		|| (column1.colType.colDataType == CalpontSystemCatalog::UDECIMAL
-			&& column1.colType.precision > 18) )//token
+			&& column1.colType.colWidth > 7) )//token
 	{
 		colStruct.colWidth = 8;
 		colStruct.tokenFlag = true;
@@ -4371,11 +4355,7 @@ uint8_t WE_DDLCommandProc::updateSyscolumnRenameColumn(messageqcpp::ByteStream& 
 		|| (column5.colType.colDataType == CalpontSystemCatalog::BLOB
 			&& column5.colType.colWidth > 7)
 		|| (column5.colType.colDataType == CalpontSystemCatalog::TEXT
-			&& column5.colType.colWidth > 7)
-		|| (column5.colType.colDataType == CalpontSystemCatalog::DECIMAL
-			&& column5.colType.precision > 18)
-		 || (column5.colType.colDataType == CalpontSystemCatalog::UDECIMAL
-			 && column5.colType.precision > 18) )//token
+			&& column5.colType.colWidth > 7) )//token
 	{
 		colStruct.colWidth = 8;
 		colStruct.tokenFlag = true;

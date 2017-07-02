@@ -78,7 +78,11 @@ namespace ddlpackage
 		case 9:
 			return 4;
 		default:
-			return 8;
+			if (p < 19)
+				return 8;
+			if (p < 39)
+				return 16;
+			return 32;
 		}
 	}
 
@@ -206,12 +210,12 @@ namespace ddlpackage
 		}
 		else if (fType->fPrecision > 18 && fType->fPrecision < 39)
 		{
-			fType->fType = DDL_INT128;
+			fType->fType = DDL_DECIMAL128;
 			fType->fLength = 16;
 		}
 		else if (fType->fPrecision > 38 && fType->fPrecision < 77)
 		{
-			fType->fType = DDL_INT256;
+			fType->fType = DDL_DECIMAL256;
 			fType->fLength = 32;
 		}
     }

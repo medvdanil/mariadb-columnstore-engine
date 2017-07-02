@@ -149,12 +149,12 @@ execplan::CalpontSystemCatalog::ColDataType DDLPackageProcessor::convertDataType
 			colDataType = CalpontSystemCatalog::VARBINARY;
 			break;
 			
-		case ddlpackage::DDL_INT128:
-			colDataType = CalpontSystemCatalog::INT128;
+		case ddlpackage::DDL_DECIMAL128:
+			colDataType = CalpontSystemCatalog::DECIMAL128;
 			break;
 			
-		case ddlpackage::DDL_INT256:
-			colDataType = CalpontSystemCatalog::INT256;
+		case ddlpackage::DDL_DECIMAL256:
+			colDataType = CalpontSystemCatalog::DECIMAL256;
 			break;
 
 		case ddlpackage::DDL_BIT:

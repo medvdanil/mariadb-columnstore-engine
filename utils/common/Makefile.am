@@ -24,12 +24,9 @@ AM_CFLAGS = $(idb_cflags)
 AM_CXXFLAGS = $(idb_cxxflags)
 AM_LDFLAGS = -version-info 1:0:0 $(idb_ldflags)
 lib_LTLIBRARIES = libcommon.la
-libcommon_la_SOURCES = fixedallocator.cpp poolallocator.cpp \
-cgroupconfigurator.cpp MonitorProcMem.cpp nullvaluemanip.cpp \
-int128.cpp
+libcommon_la_SOURCES = fixedallocator.cpp poolallocator.cpp cgroupconfigurator.cpp MonitorProcMem.cpp nullvaluemanip.cpp
 include_HEADERS = hasher.h simpleallocator.h fixedallocator.h poolallocator.h \
-stlpoolallocator.h syncstream.h atomicops.h branchpred.h cgroupconfigurator.h \
-MonitorProcMem.h nullvaluemanip.h int128.h
+stlpoolallocator.h syncstream.h atomicops.h branchpred.h cgroupconfigurator.h MonitorProcMem.h nullvaluemanip.h
 
 test:
 
