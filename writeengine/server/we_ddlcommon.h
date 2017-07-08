@@ -225,6 +225,16 @@ inline boost::any getNullValueForType(const execplan::CalpontSystemCatalog::ColT
 					long long eightbyte = joblist::BIGINTNULL;
 					value = eightbyte;
 				}
+				else if (colType.colWidth <= 38)
+				{
+					long long eightbyte = joblist::BIGINTNULL;
+					value = eightbyte;
+				}
+				else if (colType.colWidth <= 76)
+				{
+					long long eightbyte = joblist::BIGINTNULL;
+					value = eightbyte;
+				}
 				else
 				{
 					WriteEngine::Token nullToken;

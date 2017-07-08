@@ -176,14 +176,8 @@ pColStep::pColStep(
 		fColType.colWidth = 8;
 		fIsDict = true;
 	}
-	else if (fColType.colDataType == CalpontSystemCatalog::DECIMAL128)
+	else if (fColType.colDataType == CalpontSystemCatalog::DECIMAL)
 	{
-		fColType.colWidth = 16;
-		fIsDict = false;
-	}
-	else if (fColType.colDataType == CalpontSystemCatalog::DECIMAL256)
-	{
-		fColType.colWidth = 32;
 		fIsDict = false;
 	}
 	else if (fColType.colWidth > 8 )

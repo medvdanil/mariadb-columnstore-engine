@@ -2080,8 +2080,8 @@ uint8_t WE_DMLCommandProc::processUpdate(messageqcpp::ByteStream& bs,
 							case CalpontSystemCatalog::DECIMAL:
 							case CalpontSystemCatalog::UDECIMAL:
 							{
-								// decimal width > 8 cannot be stored in an integer
-								if (fetchColColwidths[fetchColPos] > 8)
+								// decimal width > 32 cannot be stored in an integer
+								if (fetchColColwidths[fetchColPos] > 32)
 								{
 									value = row.getStringField(fetchColPos);
 									unsigned i = strlen(value.c_str());
@@ -2367,8 +2367,8 @@ uint8_t WE_DMLCommandProc::processUpdate(messageqcpp::ByteStream& bs,
 								case CalpontSystemCatalog::DECIMAL:
 								case CalpontSystemCatalog::UDECIMAL:
 								{
-									// decimal width > 8 cannot be stored in an integer
-									if (fetchColColwidths[fetchColPos] > 8)
+									// decimal width > 32 cannot be stored in an integer
+									if (fetchColColwidths[fetchColPos] > 32)
 									{
 										value = row.getStringField(fetchColPos);
 										unsigned i = strlen(value.c_str());

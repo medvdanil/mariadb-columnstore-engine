@@ -890,6 +890,10 @@ boost::any
 					value = (int) number_int_value(data, colType, pushWarning, noRoundup);
 				else if (colType.colWidth == 8)
 					value = (long long) number_int_value(data, colType, pushWarning, noRoundup);
+				else if (colType.colWidth == 16)
+					value = (long long) number_int_value(data, colType, pushWarning, noRoundup);
+				else if (colType.colWidth == 32)
+					value = (long long) number_int_value(data, colType, pushWarning, noRoundup);
 			break;
 			case CalpontSystemCatalog::UDECIMAL:
 				// UDECIMAL numbers may not be negative
