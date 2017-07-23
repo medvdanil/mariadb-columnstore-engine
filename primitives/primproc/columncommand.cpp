@@ -152,14 +152,16 @@ void ColumnCommand::loadData()
 	uint32_t blocksToLoad = 0;
 	BRM::LBID_t *lbids = (BRM::LBID_t *) alloca(8 * sizeof(BRM::LBID_t));
 	uint8_t **blockPtrs = (uint8_t **) alloca(8 * sizeof(uint8_t *));
+	int32_t width = colType.colWidth;
 	int i;
-
+	
+	FILE *ftmp = fopen("/tmp/cstmp.log", "a+");
+	fprintf(ftmp, "loaddata %d\n", colType.colWidth);
+	fclose(ftmp);
 
 	_mask = mask;
-// 	primMsg->RidFlags = 0xff;   // disables selective block loading
-	//cout <<__FILE__ << "::issuePrimitive() o: " << getOID() << " l:" << primMsg->LBID << " ll: " << oidLastLbid << endl;
-
-	for (i=0; i < colType.colWidth; ++i, _mask <<= shift) {
+	
+	for (i=0; i < width; ++i, _mask <<= shift) {
 
 		if ((!lastBlockReached && _isScan) || (!_isScan && primMsg->RidFlags & _mask)) {
 			lbids[blocksToLoad] = primMsg->LBID + i;
@@ -169,39 +171,51 @@ void ColumnCommand::loadData()
 		}
 		else if (lastBlockReached && _isScan)
 		{	// fill remaining blocks with empty values when col scan
-			int blockLen = BLOCK_SIZE/colType.colWidth;
+			int blockLen = BLOCK_SIZE/width;
 			ByteStream::octbyte* oPtr=NULL;
 			ByteStream::quadbyte* qPtr=NULL;
 			ByteStream::byte* bPtr=NULL;
 			ByteStream::doublebyte* dPtr=NULL;
-			if (colType.colWidth==1)
+			if (width==1)
 				bPtr = reinterpret_cast<ByteStream::byte*>(&bpp->blockData[i*BLOCK_SIZE]);
 			//@Bug 1812. Added two bytes column handling
-			if (colType.colWidth==2)
+			if (width==2)
 				dPtr = reinterpret_cast<ByteStream::doublebyte*>(&bpp->blockData[i*BLOCK_SIZE]);
-			if (colType.colWidth==4)
+			if (width==4)
 				qPtr = reinterpret_cast<ByteStream::quadbyte*>(&bpp->blockData[i*BLOCK_SIZE]);
-			if (colType.colWidth==8)
+			if (width > 8)
 				oPtr = reinterpret_cast<ByteStream::octbyte*>(&bpp->blockData[i*BLOCK_SIZE]);
 
 			for (int idx=0; idx < blockLen; idx++)
 			{
-				if (bPtr && colType.colWidth==1) {
-					ByteStream::byte b = getEmptyRowValue(colType.colDataType, colType.colWidth);
+				if (bPtr && width==1) {
+					ByteStream::byte b = getEmptyRowValue(colType.colDataType, width);
 					bPtr[idx] = b;
 				}
 				//@Bug 1812. Added two bytes column handling
-				else if (dPtr && colType.colWidth==2) {
-					ByteStream::doublebyte d = getEmptyRowValue(colType.colDataType, colType.colWidth);
+				else if (dPtr && width==2) {
+					ByteStream::doublebyte d = getEmptyRowValue(colType.colDataType, width);
 					dPtr[idx] = d;
 				}
-				else if (qPtr && colType.colWidth==4) {
-					ByteStream::quadbyte q = getEmptyRowValue(colType.colDataType, colType.colWidth);
+				else if (qPtr && width==4) {
+					ByteStream::quadbyte q = getEmptyRowValue(colType.colDataType, width);
 					qPtr[idx] = q;
 				}
-				else if (oPtr && colType.colWidth==8) {
-					ByteStream::octbyte o = getEmptyRowValue(colType.colDataType, colType.colWidth);
+				else if (oPtr && width==8) {
+					ByteStream::octbyte o = getEmptyRowValue(colType.colDataType, width);
 					oPtr[idx] = o;
+				}
+				else if (oPtr && width==16) {
+					ByteStream::octbyte o = getEmptyRowValue(colType.colDataType, width);
+					oPtr[idx * 2] = o;
+					oPtr[idx * 2 + 1] = o;
+				}
+				else if (oPtr && width==32) {
+					ByteStream::octbyte o = getEmptyRowValue(colType.colDataType, width);
+					oPtr[idx * 4] = o;
+					oPtr[idx * 4 + 1] = o;
+					oPtr[idx * 4 + 2] = o;
+					oPtr[idx * 4 + 3] = o;
 				}
 			}
 
@@ -265,6 +279,9 @@ void ColumnCommand::process_OT_BOTH()
 // 	cout << "rid Count is " << bpp->ridCount << endl;
 
 	/* this is verbose and repetative to minimize the work per row */
+	FILE *ftmp = fopen("/tmp/cstmp.log", "a+");
+	fprintf(ftmp, "OTBOTH %d\n", colType.colWidth);
+	fclose(ftmp);
 	switch(colType.colWidth) {
 	case 8:
 		for (i = 0, pos = sizeof(NewColResultHeader); i < outMsg->NVALS; ++i) {
@@ -320,6 +337,10 @@ void ColumnCommand::process_OT_RID()
 void ColumnCommand::process_OT_DATAVALUE()
 {
 	bpp->ridCount = outMsg->NVALS;
+	
+	FILE *ftmp = fopen("/tmp/cstmp.log", "a+");
+	fprintf(ftmp, "OT_DA %d\n", colType.colWidth);
+	fclose(ftmp);
 // 	cout << "rid Count is " << bpp->ridCount << endl;
 	switch(colType.colWidth) {
 	case 8:
